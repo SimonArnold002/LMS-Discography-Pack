@@ -1,0 +1,138 @@
+# Build the pack from MusicBrainz's newest full dump, with a delta from the
+# last published pack, and publish both as a release. Checks every six hours;
+# builds only when a newer dump exists (MusicBrainz publishes two a week).
+#
+# Manual run (Actions > Build pack > Run workflow):
+#   dump      build this fullexport dump instead of the newest (MusicBrainz
+#             keeps the last two; build the older one first, then the newest,
+#             to publish a first delta)
+#   force     rebuild even if this dump is already published (replaces its
+#             release; devices behind it then take the whole pack)
+#   dsc_ref   LMS-Discography branch/tag/sha whose Sources.pm makes the name
+#             keys (default: the DSC_REF repository variable, else dev: DSC's
+#             main holds docs only until its first release)
+name: Build pack
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      dump:
+        description: 'fullexport dump name (blank = newest)'
+        default: ''
+      force:
+        description: 'Rebuild even if this dump is already published'
+        type: boolean
+        default: false
+      dsc_ref:
+        description: 'LMS-Discography ref for the name keys (blank = DSC_REF variable, else dev)'
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pack
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      DSC_REF: ${{ inputs.dsc_ref || vars.DSC_REF || 'dev' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Which dump
+        id: plan
+        run: |
+          fmt=$(python3 -I builder/build_pack.py --format)
+          manifest="manifest-v$fmt.json"
+          dump="${{ inputs.dump }}"
+          [ -n "$dump" ] || dump=$(python3 -I builder/fetch_dump.py latest)
+          have=$(python3 -I builder/release.py check --manifest "$manifest")
+          build=yes
+          if [ "$dump" = "$have" ] && [ "${{ inputs.force }}" != "true" ]; then build=no; fi
+          if [ -n "$have" ] && [[ "$dump" < "$have" ]]; then
+            echo "::error::dump $dump is older than the published $have"; exit 1
+          fi
+          echo "format=$fmt" >> "$GITHUB_OUTPUT"
+          echo "manifest=$manifest" >> "$GITHUB_OUTPUT"
+          echo "dump=$dump" >> "$GITHUB_OUTPUT"
+          echo "have=$have" >> "$GITHUB_OUTPUT"
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "dump $dump, published $have, format $fmt, build $build"
+
+      - name: LMS-Discography's Sources.pm (the name keys)
+        if: steps.plan.outputs.build == 'yes'
+        uses: actions/checkout@v4
+        with:
+          repository: SimonArnold002/LMS-Discography
+          ref: ${{ env.DSC_REF }}
+          path: dsc
+          sparse-checkout: Discography/Sources.pm
+          sparse-checkout-cone-mode: false
+
+      - name: Tests (nothing is published if they fail)
+        if: steps.plan.outputs.build == 'yes'
+        run: DSC_DIR="$PWD/dsc" python3 -m unittest discover -s tests -v
+
+      - name: Disk space and tools
+        if: steps.plan.outputs.build == 'yes'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get update -qq && sudo apt-get install -y -qq lbzip2
+          df -h . && free -g
+
+      - name: Fetch the dump (streamed, MD5 checked)
+        if: steps.plan.outputs.build == 'yes'
+        run: python3 -I builder/fetch_dump.py "${{ steps.plan.outputs.dump }}" work
+
+      - name: Build the pack
+        if: steps.plan.outputs.build == 'yes'
+        run: |
+          mkdir -p out
+          python3 -I builder/build_pack.py work "out/pack-${{ steps.plan.outputs.dump }}.db" \
+            --dsc "$PWD/dsc" --dump "${{ steps.plan.outputs.dump }}"
+          rm -rf work
+
+      - name: Delta from the published pack
+        id: delta
+        if: steps.plan.outputs.build == 'yes' && steps.plan.outputs.have != '' && steps.plan.outputs.have != steps.plan.outputs.dump
+        run: |
+          have="${{ steps.plan.outputs.have }}"; dump="${{ steps.plan.outputs.dump }}"
+          python3 -I builder/release.py fetch-prev --manifest "${{ steps.plan.outputs.manifest }}" --out prev.db
+          set +e
+          python3 -I builder/make_delta.py prev.db "out/pack-$dump.db" "out/delta-$have-$dump.db"
+          rc=$?
+          set -e
+          if [ $rc -eq 0 ]; then echo "made=yes" >> "$GITHUB_OUTPUT"
+          elif [ $rc -eq 3 ]; then echo "made=no" >> "$GITHUB_OUTPUT"   # format change: whole pack only
+          else exit $rc; fi
+          rm -f prev.db
+
+      - name: Compress
+        if: steps.plan.outputs.build == 'yes'
+        run: |
+          for f in out/*.db; do gzip -9 -n -k "$f"; done
+          ls -l out
+
+      - name: Publish the release and the manifest
+        if: steps.plan.outputs.build == 'yes'
+        run: |
+          have="${{ steps.plan.outputs.have }}"; dump="${{ steps.plan.outputs.dump }}"
+          args=(--repo "$REPO" --manifest "${{ steps.plan.outputs.manifest }}" --dump "$dump"
+                --pack "out/pack-$dump.db.gz" --pack-db "out/pack-$dump.db")
+          if [ "${{ steps.delta.outputs.made }}" = "yes" ]; then
+            args+=(--delta "out/delta-$have-$dump.db.gz" --delta-db "out/delta-$have-$dump.db" --from "$have")
+          fi
+          if [ "$dump" = "$have" ]; then args+=(--replace); fi
+          python3 -I builder/release.py publish "${args[@]}"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add manifest-v*.json
+          git commit -m "Pack $dump" && git push

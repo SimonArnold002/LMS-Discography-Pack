@@ -1,0 +1,38 @@
+# Monthly clean-up (Simon, 2026-10-16: "keep only a few updates online"): keeps
+# the newest releases (8 = about four weeks at two dumps a week), deletes the
+# rest with their tags, and drops their deltas from the manifest. A device
+# further behind than the oldest kept delta downloads the whole pack.
+name: Prune releases
+
+on:
+  schedule:
+    - cron: '41 4 1 * *'
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: 'Releases to keep'
+        default: '8'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pack
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prune
+        run: |
+          fmt=$(python3 -I builder/build_pack.py --format)
+          python3 -I builder/release.py prune --repo "${{ github.repository }}" \
+            --manifest "manifest-v$fmt.json" --keep "${{ inputs.keep || '8' }}"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add manifest-v*.json
+          if git diff --cached --quiet; then echo 'manifest unchanged'; else git commit -m 'Prune releases' && git push; fi
