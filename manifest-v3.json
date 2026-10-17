@@ -1,0 +1,14 @@
+{
+ "deltas": [],
+ "format": 3,
+ "latest": "20261014-150514",
+ "pack": {
+  "db_sha1": "f2b31a2d2742abeb1592d066c9f3424191482d90",
+  "db_size": 414384128,
+  "dump": "20261014-150514",
+  "sha1": "2bd7421f496bf26d84e5994abb9f8603a959818c",
+  "size": 267916375,
+  "url": "https://github.com/SimonArnold002/LMS-Discography-Pack/releases/download/pack-20261014-150514/pack-20261014-150514.db.gz"
+ },
+ "updated": "2026-10-17T04:51:02Z"
+}
