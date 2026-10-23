@@ -96,6 +96,34 @@ def measure(path, label=''):
             print(f'  {what:58} {q(s):>12,}')
         except sqlite3.Error as e:
             print(f'  {what:58} ({e})')
+    # Why the artists with no release group have a row, and which artists the
+    # same-name list's description (artist_info) is ever shown for: only an
+    # act whose name key another act shares (Browse::_stampDisambiguation and
+    # the same-name rows need 2+ acts of the name).
+    try:
+        c.execute('CREATE TEMP TABLE ng AS SELECT a.id, '
+                  'EXISTS (SELECT 1 FROM artist_rel x WHERE x.a = a.id) OR EXISTS (SELECT 1 FROM artist_rel x WHERE x.b = a.id) AS rel, '
+                  'EXISTS (SELECT 1 FROM artist_alias x WHERE x.artist = a.id) AS ali, '
+                  '(SELECT group_concat(DISTINCT svc) FROM (SELECT svc FROM artist_url x WHERE x.artist = a.id ORDER BY svc)) AS svcs '
+                  'FROM artist a WHERE a.ngroups = 0')
+        print('  artists with no release group, by what keeps them (rel = band/collaboration link, '
+              'ali = alias, svc 1 Qobuz / 2 Deezer / 3 Discogs):')
+        for rel, ali, svcs, n_ in c.execute('SELECT rel, ali, coalesce(svcs, \'-\'), count(*) FROM ng '
+                                            'GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 16'):
+            print(f'    rel {rel} ali {ali} svc {svcs:8} {n_:>12,}')
+        for svc, n_ in c.execute('SELECT svc, count(*) FROM artist_url GROUP BY svc ORDER BY svc'):
+            print(f'  artist_url svc {svc}: {n_:,} rows')
+        c.execute('CREATE TEMP TABLE shared AS SELECT key FROM artist_name GROUP BY key HAVING count(*) > 1')
+        sk = q('SELECT count(*) FROM artist_name WHERE key IN (SELECT key FROM shared)')
+        si = q('SELECT count(*) FROM artist_info WHERE artist IN '
+               '(SELECT artist FROM artist_name WHERE key IN (SELECT key FROM shared))')
+        ub = q('SELECT coalesce(sum(length(artist) + coalesce(length(comment), 0) + 2), 0) FROM artist_info WHERE artist NOT IN '
+               '(SELECT artist FROM artist_name WHERE key IN (SELECT key FROM shared))')
+        print(f'  artists whose name key another artist shares {sk:>12,}; artist_info rows among them {si:,}')
+        print(f'  artist_info rows for a name key NO other artist has: {q("SELECT count(*) FROM artist_info") - si:,}, '
+              f'~{mb(ub).strip()} of row data')
+    except sqlite3.Error as e:
+        print(f'  (breakdown: {e})')
     try:
         for kind, n, b in c.execute('SELECT kind, count(*), sum(length(url)) FROM rg_url GROUP BY kind ORDER BY kind'):
             print(f'  rg_url kind {kind}: {n:,} rows, {mb(b).strip()} of URL text, avg {b / n:.0f} chars')

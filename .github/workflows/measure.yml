@@ -18,6 +18,7 @@ on:
     paths:
       - .github/workflows/measure.yml
       - builder/measure_pack.py
+      - builder/compact_proto.py
   workflow_dispatch:
     inputs:
       old:
@@ -74,6 +75,25 @@ jobs:
           python3 -I builder/measure_pack.py --grow "m/pack-$old.db" "m/delta-$old-$new.db" m/grown.db | tee -a report.txt
           python3 -I builder/measure_pack.py m/grown.db "grown: $old + delta -> $new (as on a device)" | tee -a report.txt
           python3 -I builder/measure_pack.py "m/pack-$new.db" "fresh $new" | tee -a report.txt
+          # The stepped rewrite into the proposed format 4 (compact_proto.py): the grown file and the
+          # fresh pack hold the same rows, so after the rewrite they must be the same size.
+          echo "=== stepped rewrite of the grown file (format 4)" | tee -a report.txt
+          python3 -I builder/compact_proto.py m/grown.db m/grown-f4.db 5000 | tee -a report.txt
+          echo "=== stepped rewrite of the fresh $new pack (format 4)" | tee -a report.txt
+          python3 -I builder/compact_proto.py "m/pack-$new.db" m/fresh-f4.db 5000 | tee -a report.txt
+          python3 -I builder/measure_pack.py m/fresh-f4.db "format 4 from fresh $new" | tee -a report.txt
+          python3 -I - m/grown-f4.db m/fresh-f4.db <<'EOF' | tee -a report.txt
+          import sqlite3, sys
+          a, b = sys.argv[1:]
+          c = sqlite3.connect(':memory:'); c.execute('ATTACH ? AS a', (a,)); c.execute('ATTACH ? AS b', (b,))
+          bad = 0
+          for (t,) in c.execute("SELECT name FROM a.sqlite_master WHERE type='table'").fetchall():
+              for x, y in (('a', 'b'), ('b', 'a')):
+                  n = c.execute(f'SELECT count(*) FROM (SELECT * FROM {x}.{t} EXCEPT SELECT * FROM {y}.{t})').fetchone()[0]
+                  if n: bad += 1; print(f'  {t}: {n} rows in {x} not in {y}')
+          import os
+          print(f'grown+rewrite {os.path.getsize(a):,} B vs fresh+rewrite {os.path.getsize(b):,} B; tables differ: {bad}')
+          EOF
 
       - uses: actions/upload-artifact@v4
         with:
