@@ -1,0 +1,70 @@
+# Where the pack's bytes go, and what applying a delta in place does to the
+# file (a device never VACUUMs). Run by hand: Actions > Measure pack > Run
+# workflow. Builds and publishes nothing; it reads published release assets.
+#
+#   old   the pack a device holds (blank = the second-newest release with a pack)
+#   new   the next dump (blank = the newest); a delta old -> new must be published
+#
+# Measures the fresh old pack, old + delta applied exactly as the device does,
+# and the fresh new pack. Compare "grown" with "new": the same rows, so any
+# difference in size is the in-place apply.
+name: Measure pack
+
+on:
+  workflow_dispatch:
+    inputs:
+      old:
+        description: 'dump of the pack a device holds (blank = second-newest)'
+        default: ''
+      new:
+        description: 'dump the delta goes to (blank = newest)'
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Which packs
+        id: plan
+        run: |
+          mapfile -t tags < <(gh api "repos/$REPO/releases?per_page=20" \
+            --jq '[.[] | select(any(.assets[]; .name | startswith("pack-"))) | .tag_name] | .[]')
+          new="${{ inputs.new }}"; old="${{ inputs.old }}"
+          [ -n "$new" ] || new="${tags[0]#pack-}"
+          [ -n "$old" ] || old="${tags[1]#pack-}"
+          [ -n "$old" ] && [ -n "$new" ] || { echo "::error::need two releases with a pack"; exit 1; }
+          echo "old=$old" >> "$GITHUB_OUTPUT"; echo "new=$new" >> "$GITHUB_OUTPUT"
+          echo "old $old, new $new"
+          sqlite3 --version || true
+          python3 -c 'import sqlite3; print("python sqlite", sqlite3.sqlite_version)'
+
+      - name: Download
+        run: |
+          old="${{ steps.plan.outputs.old }}"; new="${{ steps.plan.outputs.new }}"
+          mkdir -p m
+          gh release download "pack-$old" -R "$REPO" -p "pack-$old.db.gz" -D m
+          gh release download "pack-$new" -R "$REPO" -p "pack-$new.db.gz" -p "delta-$old-$new.db.gz" -D m
+          gunzip m/*.gz
+          ls -l m
+
+      - name: Measure
+        run: |
+          old="${{ steps.plan.outputs.old }}"; new="${{ steps.plan.outputs.new }}"
+          python3 -I builder/measure_pack.py "m/pack-$old.db" "fresh $old" | tee report.txt
+          python3 -I builder/measure_pack.py --grow "m/pack-$old.db" "m/delta-$old-$new.db" m/grown.db | tee -a report.txt
+          python3 -I builder/measure_pack.py m/grown.db "grown: $old + delta -> $new (as on a device)" | tee -a report.txt
+          python3 -I builder/measure_pack.py "m/pack-$new.db" "fresh $new" | tee -a report.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pack-measure
+          path: report.txt
