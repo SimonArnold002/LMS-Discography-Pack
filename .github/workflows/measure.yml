@@ -1,6 +1,8 @@
 # Where the pack's bytes go, and what applying a delta in place does to the
-# file (a device never VACUUMs). Run by hand: Actions > Measure pack > Run
-# workflow. Builds and publishes nothing; it reads published release assets.
+# file (a device never VACUUMs). Runs when this file or measure_pack.py is
+# pushed, or by hand (Actions > Measure pack > Run workflow). Builds and
+# publishes no pack; it reads published release assets and commits its report
+# to reports/measure-<old>-<new>.txt, readable without a GitHub login.
 #
 #   old   the pack a device holds (blank = the second-newest release with a pack)
 #   new   the next dump (blank = the newest); a delta old -> new must be published
@@ -11,6 +13,11 @@
 name: Measure pack
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/measure.yml
+      - builder/measure_pack.py
   workflow_dispatch:
     inputs:
       old:
@@ -21,7 +28,11 @@ on:
         default: ''
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: pack
+  cancel-in-progress: false
 
 jobs:
   measure:
@@ -68,3 +79,15 @@ jobs:
         with:
           name: pack-measure
           path: report.txt
+
+      - name: Commit the report
+        run: |
+          old="${{ steps.plan.outputs.old }}"; new="${{ steps.plan.outputs.new }}"
+          mkdir -p reports
+          cp report.txt "reports/measure-$old-$new.txt"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add reports
+          git commit -m "Measure report $old -> $new"
+          git pull --rebase -q origin main
+          git push
