@@ -75,6 +75,11 @@ def measure(path, label=''):
           ' (the unique gid indexes hold them a second time)')
 
     q = lambda s: c.execute(s).fetchone()[0]
+    # A lookup by the link's second artist: format 4 keeps it in the
+    # artist_rel_b TABLE; format 3 in an index on artist_rel. Asking
+    # artist_rel by b in format 4 scans it once per artist (the 2026-10-23
+    # run that timed out).
+    relb = 'artist_rel_b' if c.execute("SELECT 1 FROM sqlite_master WHERE name = 'artist_rel_b' AND type = 'table'").fetchone() else 'artist_rel'
     print('\ndesign counts:')
     for what, s in [
         ('artists', 'SELECT count(*) FROM artist'),
@@ -83,7 +88,7 @@ def measure(path, label=''):
             'AND NOT EXISTS (SELECT 1 FROM artist_alias x WHERE x.artist = a.id) '
             'AND NOT EXISTS (SELECT 1 FROM artist_url x WHERE x.artist = a.id) '
             'AND NOT EXISTS (SELECT 1 FROM artist_rel x WHERE x.a = a.id) '
-            'AND NOT EXISTS (SELECT 1 FROM artist_rel x WHERE x.b = a.id)'),
+            f'AND NOT EXISTS (SELECT 1 FROM {relb} x WHERE x.b = a.id)'),
         ('artist_name keys equal to the name as stored', 'SELECT count(*) FROM artist_name n JOIN artist a ON a.id = n.artist WHERE n.key = a.name'),
         ('release map rows', 'SELECT count(*) FROM release'),
         ('  distinct groups among them', 'SELECT count(DISTINCT rg) FROM release'),
@@ -102,7 +107,7 @@ def measure(path, label=''):
     # the same-name rows need 2+ acts of the name).
     try:
         c.execute('CREATE TEMP TABLE ng AS SELECT a.id, '
-                  'EXISTS (SELECT 1 FROM artist_rel x WHERE x.a = a.id) OR EXISTS (SELECT 1 FROM artist_rel x WHERE x.b = a.id) AS rel, '
+                  f'EXISTS (SELECT 1 FROM artist_rel x WHERE x.a = a.id) OR EXISTS (SELECT 1 FROM {relb} x WHERE x.b = a.id) AS rel, '
                   'EXISTS (SELECT 1 FROM artist_alias x WHERE x.artist = a.id) AS ali, '
                   '(SELECT group_concat(DISTINCT svc) FROM (SELECT svc FROM artist_url x WHERE x.artist = a.id ORDER BY svc)) AS svcs '
                   'FROM artist a WHERE a.ngroups = 0')

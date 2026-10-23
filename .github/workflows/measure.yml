@@ -38,7 +38,7 @@ concurrency:
 jobs:
   measure:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -82,7 +82,13 @@ jobs:
           echo "=== stepped rewrite of the fresh $new pack (format 4)" | tee -a report.txt
           python3 -I builder/compact_proto.py "m/pack-$new.db" m/fresh-f4.db 5000 | tee -a report.txt
           python3 -I builder/measure_pack.py m/fresh-f4.db "format 4 from fresh $new" | tee -a report.txt
-          python3 -I - m/grown-f4.db m/fresh-f4.db <<'EOF' | tee -a report.txt
+          # What a device would do after a delta: each table copied in ONE statement (packs pages
+          # as VACUUM does), yielding between tables. The longest table = the longest LMS wait.
+          echo "=== table-by-table rewrite of the grown file (format 4)" | tee -a report.txt
+          python3 -I builder/compact_proto.py --whole m/grown-f4.db m/grown-whole.db | tee -a report.txt
+          echo "=== table-by-table rewrite of the fresh $new pack (format 4)" | tee -a report.txt
+          python3 -I builder/compact_proto.py --whole m/fresh-f4.db m/fresh-whole.db | tee -a report.txt
+          python3 -I - m/grown-whole.db m/fresh-whole.db <<'EOF' | tee -a report.txt
           import sqlite3, sys
           a, b = sys.argv[1:]
           c = sqlite3.connect(':memory:'); c.execute('ATTACH ? AS a', (a,)); c.execute('ATTACH ? AS b', (b,))
@@ -92,15 +98,17 @@ jobs:
                   n = c.execute(f'SELECT count(*) FROM (SELECT * FROM {x}.{t} EXCEPT SELECT * FROM {y}.{t})').fetchone()[0]
                   if n: bad += 1; print(f'  {t}: {n} rows in {x} not in {y}')
           import os
-          print(f'grown+rewrite {os.path.getsize(a):,} B vs fresh+rewrite {os.path.getsize(b):,} B; tables differ: {bad}')
+          print(f'grown, rewritten {os.path.getsize(a):,} B vs fresh, rewritten {os.path.getsize(b):,} B; tables differ: {bad}')
           EOF
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: pack-measure
           path: report.txt
 
-      - name: Commit the report
+      - name: Commit the report (also when a step failed, so the partial report is readable)
+        if: always()
         run: |
           old="${{ steps.plan.outputs.old }}"; new="${{ steps.plan.outputs.new }}"
           mkdir -p reports

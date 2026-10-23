@@ -17,6 +17,13 @@ Every table is keyed by its PRIMARY KEY and copied in that order.
 Usage: python3 -I compact_proto.py <format-3 pack.db> <out.db> [rows per step]
 Prints the size, and the time per step (median, 99th percentile, worst) and
 rows per second. sqlite_stat1 is not copied (format 4 runs no ANALYZE).
+
+       python3 -I compact_proto.py --whole <format-4 pack.db> <out.db>
+Copies each table of a format-4 pack in ONE statement (INSERT INTO t SELECT *
+FROM s.t: SQLite's transfer path, the one VACUUM uses, which packs pages
+full; measured 2026-10-23 that a copy in steps, any way it is written, leaves
+WITHOUT ROWID tables ~10 points less full). A device would yield BETWEEN
+tables, so the worst table's time is how long LMS would wait.
 """
 import os, sqlite3, sys, time
 
@@ -127,6 +134,29 @@ def run(src, out, step=5000):
     return size
 
 
+def whole(src, out):
+    if os.path.exists(out):
+        os.remove(out)
+    c = sqlite3.connect(out, isolation_level=None)
+    c.executescript('PRAGMA page_size=4096; PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF;' + SCHEMA4)
+    c.execute('ATTACH DATABASE ? AS s', (src,))
+    worst, t_all = (0.0, ''), time.time()
+    for dest, *_ in PLAN:
+        t0 = time.time()
+        c.execute('BEGIN')
+        c.execute(f'INSERT INTO main.{dest} SELECT * FROM s.{dest}')
+        c.execute('COMMIT')
+        el = time.time() - t0
+        n = c.execute(f'SELECT count(*) FROM main.{dest}').fetchone()[0]
+        print(f'  {dest:16} {n:>10,} rows in one go  {1000 * el:7.0f} ms')
+        worst = max(worst, (el, dest))
+    c.execute('DETACH DATABASE s')
+    c.close()
+    size = os.path.getsize(out)
+    print(f'{out}: {size:,} bytes in {time.time() - t_all:.1f} s; the longest table: {worst[1]} {1000 * worst[0]:.0f} ms')
+    return size
+
+
 def vacuumed(path):
     """The same file VACUUMed (the builder's compaction), for comparison."""
     v = path + '.vac'
@@ -139,6 +169,11 @@ def vacuumed(path):
 
 
 if __name__ == '__main__':
+    if sys.argv[1:2] == ['--whole'] and len(sys.argv) == 4:
+        size = whole(sys.argv[2], sys.argv[3])
+        v = vacuumed(sys.argv[3])
+        print(f'the same rows VACUUMed: {v:,} bytes ({size - v:+,} for the table-by-table copy)')
+        sys.exit(0)
     if len(sys.argv) not in (3, 4):
         raise SystemExit(__doc__)
     size = run(sys.argv[1], sys.argv[2], int(sys.argv[3]) if len(sys.argv) == 4 else 5000)
