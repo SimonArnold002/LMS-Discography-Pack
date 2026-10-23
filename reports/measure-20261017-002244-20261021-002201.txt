@@ -1,0 +1,355 @@
+
+=== fresh 20261017-002244 (dump 20261017-002244)
+file     414.8 MB  page 4096 B  pages 101,259  free pages 0 (0.0 MB)
+
+B-tree                       of table             pages      on disk     row data   full  share
+artist                                           20,590      84.3 MB      70.3 MB  83.4%  20.3%
+artist_gid                   artist              12,710      52.1 MB      45.5 MB  87.4%  12.6%
+artist_name                                      10,955      44.9 MB      38.4 MB  85.6%  10.8%
+release                                          10,538      43.2 MB      39.7 MB  92.0%  10.4%
+artist_info                                      10,181      41.7 MB      29.7 MB  71.3%  10.1%
+rg_url                                            7,121      29.2 MB      27.2 MB  93.3%   7.0%
+artist_url                                        5,468      22.4 MB      17.5 MB  78.3%   5.4%
+rgx                                               5,276      21.6 MB      16.7 MB  77.2%   5.2%
+artist_rel                                        4,819      19.7 MB      17.7 MB  89.8%   4.8%
+rgx_gid                      rgx                  4,582      18.8 MB      16.4 MB  87.4%   4.5%
+artist_alias                                      3,622      14.8 MB      13.1 MB  88.2%   3.6%
+rg_edition                                        2,257       9.2 MB       8.4 MB  91.2%   2.2%
+artist_rel_b                 artist_rel           1,949       8.0 MB       6.1 MB  76.4%   1.9%
+rg_alias                                            630       2.6 MB       2.3 MB  90.8%   0.6%
+artist_redirect                                     554       2.3 MB       2.0 MB  87.1%   0.5%
+sqlite_stat1                                          1       0.0 MB       0.0 MB  12.3%   0.0%
+sqlite_schema                sqlite_schema            1       0.0 MB       0.0 MB  65.7%   0.0%
+rg_type                                               1       0.0 MB       0.0 MB   1.0%   0.0%
+rg_sec                                                1       0.0 MB       0.0 MB   3.5%   0.0%
+namekey_probe                                         1       0.0 MB       0.0 MB  21.4%   0.0%
+meta                                                  1       0.0 MB       0.0 MB   3.8%   0.0%
+artist_type                                           1       0.0 MB       0.0 MB   1.4%   0.0%
+
+by table, its indexes included:
+  artist                           136.4 MB   32.9%
+  artist_name                       44.9 MB   10.8%
+  release                           43.2 MB   10.4%
+  artist_info                       41.7 MB   10.1%
+  rgx                               40.4 MB    9.7%
+  rg_url                            29.2 MB    7.0%
+  artist_rel                        27.7 MB    6.7%
+  artist_url                        22.4 MB    5.4%
+  artist_alias                      14.8 MB    3.6%
+  rg_edition                         9.2 MB    2.2%
+  rg_alias                           2.6 MB    0.6%
+  artist_redirect                    2.3 MB    0.5%
+  sqlite_stat1                       0.0 MB    0.0%
+  sqlite_schema                      0.0 MB    0.0%
+  rg_type                            0.0 MB    0.0%
+  rg_sec                             0.0 MB    0.0%
+  namekey_probe                      0.0 MB    0.0%
+  meta                               0.0 MB    0.0%
+  artist_type                        0.0 MB    0.0%
+
+table.column                               rows        bytes    avg     distinct
+artist.id                             2,069,474   13,898,727    6.7    2,069,474
+artist.gid                            2,069,474   33,111,584   16.0    2,069,474
+artist.name                           2,069,474   24,878,793   12.0    1,868,327
+artist.ngroups                        2,069,474    2,175,688    1.1          560
+artist_alias.artist                     544,418    3,503,897    6.4      314,571
+artist_alias.name                       544,418    7,534,574   13.8      525,283
+artist_alias.locale                     544,418      329,803    0.6          467
+artist_alias.prim                       544,418      544,418    1.0            2
+artist_info.artist                    1,822,994   12,230,439    6.7    1,822,994
+artist_info.comment                   1,822,994   18,000,178    9.9      422,093
+artist_info.type                      1,822,994    1,723,409    0.9            6
+artist_info.country                   1,822,994    1,803,300    1.0          252
+artist_name.key                       2,068,658   24,814,763   12.0    1,833,155
+artist_name.artist                    2,068,658   13,893,204    6.7    2,068,658
+artist_redirect.gid                      90,086    1,441,376   16.0       90,086
+artist_redirect.artist                   90,086      550,899    6.1       71,682
+artist_rel.a                            612,441    4,013,123    6.6      399,522
+artist_rel.b                            612,441    3,890,230    6.4      204,599
+artist_rel.kind                         612,441      612,441    1.0            2
+artist_rel.epon                         612,441      612,441    1.0            2
+artist_rel.skey                         612,441   10,411,497   17.0      612,441
+artist_type.id                                6            6    1.0            6
+artist_type.name                              6           39    6.5            6
+artist_url.artist                     1,582,641   10,505,191    6.6    1,384,257
+artist_url.svc                        1,582,641    1,582,641    1.0            3
+artist_url.ext                        1,582,641   10,790,976    6.8    1,540,045
+meta.key                                      6           64   10.7            6
+meta.value                                    6           72   12.0            6
+namekey_probe.name                           32          362   11.3           32
+namekey_probe.key                            32          348   10.9           32
+release.gid                           1,048,836   16,781,376   16.0    1,048,836
+release.rg                            1,048,836   16,781,376   16.0      873,410
+release.type                          1,048,836    1,067,834    1.0            5
+release.sec                           1,048,836      591,199    0.6          118
+rg_alias.rg                              68,617      456,212    6.6       55,688
+rg_alias.name                            68,617    1,823,156   26.6       66,547
+rg_edition.rg                           241,795    1,603,069    6.6      203,559
+rg_edition.title                        241,795    6,563,098   27.1      233,179
+rg_sec.id                                    12           15    1.2           12
+rg_sec.name                                  12          108    9.0           12
+rg_type.id                                    5            7    1.4            5
+rg_type.name                                  5           27    5.4            5
+rg_url.rg                               555,726    3,583,167    6.4      435,386
+rg_url.kind                             555,726      555,726    1.0            5
+rg_url.url                              555,726   22,864,903   41.1      551,728
+rgx.id                                  745,772    4,930,368    6.6      745,772
+rgx.gid                                 745,772   11,932,352   16.0      745,772
+rgx.boot                                745,772      745,772    1.0            2
+rgx.discogs                             745,772    2,135,687    2.9      348,587
+
+gid blobs held as row data (artist, rgx, release, artist_redirect): 80.0 MB (the unique gid indexes hold them a second time)
+
+design counts:
+  artists                                                       2,069,474
+    with no release group (kept for a link/alias/service id)      943,464
+    with no alias, link, service id or info, 1 group              269,500
+  artist_name keys equal to the name as stored                    118,727
+  release map rows                                              1,048,836
+    distinct groups among them                                    873,410
+  groups with a row (rgx)                                         745,772
+    bootleg-only                                                  164,554
+    with a Discogs id                                             350,601
+  rg_url rows                                                     555,726
+  rg_url kind 1: 119,798 rows, 5.2 MB of URL text, avg 43 chars
+  rg_url kind 2: 350,602 rows, 13.0 MB of URL text, avg 37 chars
+  rg_url kind 3: 37,407 rows, 2.0 MB of URL text, avg 53 chars
+  rg_url kind 4: 32,346 rows, 1.9 MB of URL text, avg 59 chars
+  rg_url kind 5: 15,573 rows, 0.8 MB of URL text, avg 51 chars
+m/pack-20261017-002244.db (414,756,864 B) + m/delta-20261017-002244-20261021-002201.db -> m/grown.db (446,562,304 B)
+
+=== grown: 20261017-002244 + delta -> 20261021-002201 (as on a device) (dump 20261021-002201)
+file     446.6 MB  page 4096 B  pages 109,024  free pages 0 (0.0 MB)
+
+B-tree                       of table             pages      on disk     row data   full  share
+artist                                           20,978      85.9 MB      70.4 MB  81.9%  19.2%
+artist_gid                   artist              14,451      59.2 MB      45.6 MB  77.0%  13.3%
+artist_name                                      12,278      50.3 MB      38.4 MB  76.4%  11.3%
+release                                          11,799      48.3 MB      39.8 MB  82.3%  10.8%
+artist_info                                      10,532      43.1 MB      29.8 MB  69.0%   9.7%
+rg_url                                            7,323      30.0 MB      27.2 MB  90.8%   6.7%
+artist_url                                        6,147      25.2 MB      17.6 MB  69.8%   5.6%
+rgx                                               5,601      22.9 MB      16.7 MB  72.8%   5.1%
+rgx_gid                      rgx                  5,206      21.3 MB      16.4 MB  77.0%   4.8%
+artist_rel                                        5,011      20.5 MB      17.8 MB  86.5%   4.6%
+artist_alias                                      3,863      15.8 MB      13.1 MB  82.9%   3.5%
+rg_edition                                        2,434      10.0 MB       8.5 MB  84.8%   2.2%
+artist_rel_b                 artist_rel           2,113       8.7 MB       6.1 MB  70.5%   1.9%
+rg_alias                                            670       2.7 MB       2.3 MB  85.5%   0.6%
+artist_redirect                                     611       2.5 MB       2.0 MB  79.0%   0.6%
+sqlite_stat1                                          1       0.0 MB       0.0 MB  12.3%   0.0%
+sqlite_schema                sqlite_schema            1       0.0 MB       0.0 MB  65.7%   0.0%
+rg_type                                               1       0.0 MB       0.0 MB   1.0%   0.0%
+rg_sec                                                1       0.0 MB       0.0 MB   3.5%   0.0%
+namekey_probe                                         1       0.0 MB       0.0 MB  21.4%   0.0%
+meta                                                  1       0.0 MB       0.0 MB   3.8%   0.0%
+artist_type                                           1       0.0 MB       0.0 MB   1.4%   0.0%
+
+by table, its indexes included:
+  artist                           145.1 MB   32.5%
+  artist_name                       50.3 MB   11.3%
+  release                           48.3 MB   10.8%
+  rgx                               44.3 MB    9.9%
+  artist_info                       43.1 MB    9.7%
+  rg_url                            30.0 MB    6.7%
+  artist_rel                        29.2 MB    6.5%
+  artist_url                        25.2 MB    5.6%
+  artist_alias                      15.8 MB    3.5%
+  rg_edition                        10.0 MB    2.2%
+  rg_alias                           2.7 MB    0.6%
+  artist_redirect                    2.5 MB    0.6%
+  sqlite_stat1                       0.0 MB    0.0%
+  sqlite_schema                      0.0 MB    0.0%
+  rg_type                            0.0 MB    0.0%
+  rg_sec                             0.0 MB    0.0%
+  namekey_probe                      0.0 MB    0.0%
+  meta                               0.0 MB    0.0%
+  artist_type                        0.0 MB    0.0%
+
+table.column                               rows        bytes    avg     distinct
+artist.id                             2,072,162   13,917,493    6.7    2,072,162
+artist.gid                            2,072,162   33,154,592   16.0    2,072,162
+artist.name                           2,072,162   24,908,243   12.0    1,870,699
+artist.ngroups                        2,072,162    2,178,581    1.1          557
+artist_alias.artist                     545,388    3,510,487    6.4      315,008
+artist_alias.name                       545,388    7,547,480   13.8      526,194
+artist_alias.locale                     545,388      330,779    0.6          466
+artist_alias.prim                       545,388      545,388    1.0            2
+artist_info.artist                    1,825,246   12,246,152    6.7    1,825,246
+artist_info.comment                   1,825,246   18,034,943    9.9      422,878
+artist_info.type                      1,825,246    1,725,481    0.9            6
+artist_info.country                   1,825,246    1,804,998    1.0          252
+artist_name.key                       2,071,345   24,844,047   12.0    1,835,456
+artist_name.artist                    2,071,345   13,911,963    6.7    2,071,345
+artist_redirect.gid                      90,179    1,442,864   16.0       90,179
+artist_redirect.artist                   90,179      551,504    6.1       71,758
+artist_rel.a                            613,123    4,017,803    6.6      399,914
+artist_rel.b                            613,123    3,894,846    6.4      204,908
+artist_rel.kind                         613,123      613,123    1.0            2
+artist_rel.epon                         613,123      613,123    1.0            2
+artist_rel.skey                         613,123   10,423,091   17.0      613,123
+artist_type.id                                6            6    1.0            6
+artist_type.name                              6           39    6.5            6
+artist_url.artist                     1,585,849   10,527,041    6.6    1,385,893
+artist_url.svc                        1,585,849    1,585,849    1.0            3
+artist_url.ext                        1,585,849   10,814,423    6.8    1,542,953
+meta.key                                      6           64   10.7            6
+meta.value                                    6           73   12.2            6
+namekey_probe.name                           32          362   11.3           32
+namekey_probe.key                            32          348   10.9           32
+release.gid                           1,050,747   16,811,952   16.0    1,050,747
+release.rg                            1,050,747   16,811,952   16.0      874,967
+release.type                          1,050,747    1,069,756    1.0            5
+release.sec                           1,050,747      592,027    0.6          118
+rg_alias.rg                              68,764      457,222    6.6       55,815
+rg_alias.name                            68,764    1,826,087   26.6       66,687
+rg_edition.rg                           242,296    1,606,445    6.6      204,004
+rg_edition.title                        242,296    6,575,309   27.1      233,651
+rg_sec.id                                    12           15    1.2           12
+rg_sec.name                                  12          108    9.0           12
+rg_type.id                                    5            7    1.4            5
+rg_type.name                                  5           27    5.4            5
+rg_url.rg                               556,065    3,585,485    6.4      435,668
+rg_url.kind                             556,065      556,065    1.0            5
+rg_url.url                              556,065   22,878,613   41.1      552,066
+rgx.id                                  746,733    4,937,018    6.6      746,733
+rgx.gid                                 746,733   11,947,728   16.0      746,733
+rgx.boot                                746,733      746,733    1.0            2
+rgx.discogs                             746,733    2,137,443    2.9      348,852
+
+gid blobs held as row data (artist, rgx, release, artist_redirect): 80.2 MB (the unique gid indexes hold them a second time)
+
+design counts:
+  artists                                                       2,072,162
+    with no release group (kept for a link/alias/service id)      944,481
+    with no alias, link, service id or info, 1 group              269,936
+  artist_name keys equal to the name as stored                    118,904
+  release map rows                                              1,050,747
+    distinct groups among them                                    874,967
+  groups with a row (rgx)                                         746,733
+    bootleg-only                                                  164,859
+    with a Discogs id                                             350,866
+  rg_url rows                                                     556,065
+  rg_url kind 1: 119,845 rows, 5.2 MB of URL text, avg 43 chars
+  rg_url kind 2: 350,867 rows, 13.0 MB of URL text, avg 37 chars
+  rg_url kind 3: 37,400 rows, 2.0 MB of URL text, avg 53 chars
+  rg_url kind 4: 32,384 rows, 1.9 MB of URL text, avg 59 chars
+  rg_url kind 5: 15,569 rows, 0.8 MB of URL text, avg 51 chars
+
+=== fresh 20261021-002201 (dump 20261021-002201)
+file     415.3 MB  page 4096 B  pages 101,403  free pages 0 (0.0 MB)
+
+B-tree                       of table             pages      on disk     row data   full  share
+artist                                           20,618      84.5 MB      70.4 MB  83.3%  20.3%
+artist_gid                   artist              12,727      52.1 MB      45.6 MB  87.4%  12.6%
+artist_name                                      10,968      44.9 MB      38.4 MB  85.6%  10.8%
+release                                          10,558      43.2 MB      39.8 MB  92.0%  10.4%
+artist_info                                      10,198      41.8 MB      29.8 MB  71.3%  10.1%
+rg_url                                            7,126      29.2 MB      27.2 MB  93.3%   7.0%
+artist_url                                        5,479      22.4 MB      17.6 MB  78.3%   5.4%
+rgx                                               5,283      21.6 MB      16.7 MB  77.2%   5.2%
+artist_rel                                        4,825      19.8 MB      17.8 MB  89.8%   4.8%
+rgx_gid                      rgx                  4,588      18.8 MB      16.4 MB  87.4%   4.5%
+artist_alias                                      3,628      14.9 MB      13.1 MB  88.3%   3.6%
+rg_edition                                        2,262       9.3 MB       8.5 MB  91.2%   2.2%
+artist_rel_b                 artist_rel           1,951       8.0 MB       6.1 MB  76.4%   1.9%
+rg_alias                                            631       2.6 MB       2.3 MB  90.8%   0.6%
+artist_redirect                                     554       2.3 MB       2.0 MB  87.2%   0.5%
+sqlite_stat1                                          1       0.0 MB       0.0 MB  12.3%   0.0%
+sqlite_schema                sqlite_schema            1       0.0 MB       0.0 MB  65.7%   0.0%
+rg_type                                               1       0.0 MB       0.0 MB   1.0%   0.0%
+rg_sec                                                1       0.0 MB       0.0 MB   3.5%   0.0%
+namekey_probe                                         1       0.0 MB       0.0 MB  21.4%   0.0%
+meta                                                  1       0.0 MB       0.0 MB   3.8%   0.0%
+artist_type                                           1       0.0 MB       0.0 MB   1.4%   0.0%
+
+by table, its indexes included:
+  artist                           136.6 MB   32.9%
+  artist_name                       44.9 MB   10.8%
+  release                           43.2 MB   10.4%
+  artist_info                       41.8 MB   10.1%
+  rgx                               40.4 MB    9.7%
+  rg_url                            29.2 MB    7.0%
+  artist_rel                        27.8 MB    6.7%
+  artist_url                        22.4 MB    5.4%
+  artist_alias                      14.9 MB    3.6%
+  rg_edition                         9.3 MB    2.2%
+  rg_alias                           2.6 MB    0.6%
+  artist_redirect                    2.3 MB    0.5%
+  sqlite_stat1                       0.0 MB    0.0%
+  sqlite_schema                      0.0 MB    0.0%
+  rg_type                            0.0 MB    0.0%
+  rg_sec                             0.0 MB    0.0%
+  namekey_probe                      0.0 MB    0.0%
+  meta                               0.0 MB    0.0%
+  artist_type                        0.0 MB    0.0%
+
+table.column                               rows        bytes    avg     distinct
+artist.id                             2,072,162   13,917,493    6.7    2,072,162
+artist.gid                            2,072,162   33,154,592   16.0    2,072,162
+artist.name                           2,072,162   24,908,243   12.0    1,870,699
+artist.ngroups                        2,072,162    2,178,581    1.1          557
+artist_alias.artist                     545,388    3,510,487    6.4      315,008
+artist_alias.name                       545,388    7,547,480   13.8      526,194
+artist_alias.locale                     545,388      330,779    0.6          466
+artist_alias.prim                       545,388      545,388    1.0            2
+artist_info.artist                    1,825,246   12,246,152    6.7    1,825,246
+artist_info.comment                   1,825,246   18,034,943    9.9      422,878
+artist_info.type                      1,825,246    1,725,481    0.9            6
+artist_info.country                   1,825,246    1,804,998    1.0          252
+artist_name.key                       2,071,345   24,844,047   12.0    1,835,456
+artist_name.artist                    2,071,345   13,911,963    6.7    2,071,345
+artist_redirect.gid                      90,179    1,442,864   16.0       90,179
+artist_redirect.artist                   90,179      551,504    6.1       71,758
+artist_rel.a                            613,123    4,017,803    6.6      399,914
+artist_rel.b                            613,123    3,894,846    6.4      204,908
+artist_rel.kind                         613,123      613,123    1.0            2
+artist_rel.epon                         613,123      613,123    1.0            2
+artist_rel.skey                         613,123   10,423,091   17.0      613,123
+artist_type.id                                6            6    1.0            6
+artist_type.name                              6           39    6.5            6
+artist_url.artist                     1,585,849   10,527,041    6.6    1,385,893
+artist_url.svc                        1,585,849    1,585,849    1.0            3
+artist_url.ext                        1,585,849   10,814,423    6.8    1,542,953
+meta.key                                      6           64   10.7            6
+meta.value                                    6           73   12.2            6
+namekey_probe.name                           32          362   11.3           32
+namekey_probe.key                            32          348   10.9           32
+release.gid                           1,050,747   16,811,952   16.0    1,050,747
+release.rg                            1,050,747   16,811,952   16.0      874,967
+release.type                          1,050,747    1,069,756    1.0            5
+release.sec                           1,050,747      592,027    0.6          118
+rg_alias.rg                              68,764      457,222    6.6       55,815
+rg_alias.name                            68,764    1,826,087   26.6       66,687
+rg_edition.rg                           242,296    1,606,445    6.6      204,004
+rg_edition.title                        242,296    6,575,309   27.1      233,651
+rg_sec.id                                    12           15    1.2           12
+rg_sec.name                                  12          108    9.0           12
+rg_type.id                                    5            7    1.4            5
+rg_type.name                                  5           27    5.4            5
+rg_url.rg                               556,065    3,585,485    6.4      435,668
+rg_url.kind                             556,065      556,065    1.0            5
+rg_url.url                              556,065   22,878,613   41.1      552,066
+rgx.id                                  746,733    4,937,018    6.6      746,733
+rgx.gid                                 746,733   11,947,728   16.0      746,733
+rgx.boot                                746,733      746,733    1.0            2
+rgx.discogs                             746,733    2,137,443    2.9      348,852
+
+gid blobs held as row data (artist, rgx, release, artist_redirect): 80.2 MB (the unique gid indexes hold them a second time)
+
+design counts:
+  artists                                                       2,072,162
+    with no release group (kept for a link/alias/service id)      944,481
+    with no alias, link, service id or info, 1 group              269,936
+  artist_name keys equal to the name as stored                    118,904
+  release map rows                                              1,050,747
+    distinct groups among them                                    874,967
+  groups with a row (rgx)                                         746,733
+    bootleg-only                                                  164,859
+    with a Discogs id                                             350,866
+  rg_url rows                                                     556,065
+  rg_url kind 1: 119,845 rows, 5.2 MB of URL text, avg 43 chars
+  rg_url kind 2: 350,867 rows, 13.0 MB of URL text, avg 37 chars
+  rg_url kind 3: 37,400 rows, 2.0 MB of URL text, avg 53 chars
+  rg_url kind 4: 32,384 rows, 1.9 MB of URL text, avg 59 chars
+  rg_url kind 5: 15,569 rows, 0.8 MB of URL text, avg 51 chars
