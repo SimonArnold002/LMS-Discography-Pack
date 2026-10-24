@@ -38,8 +38,10 @@ what `make_delta.apply()` does.
 - Why: a delta applied in place splits B-tree pages (31 MB from one 0.57 MB
   delta, measured); a copy of each table in ONE statement packs them full
   again (a copy in steps does not: ~10 points less full), and that needs a
-  file with no secondary index. So: `artist_gk` / `rgx_gk` (first 8 gid bytes,
-  id) replace the unique gid indexes (the plugin checks the full gid);
+  file with no secondary index. So: `artist_gk` (first 8 gid bytes, id)
+  replaces the unique artist gid index, and `rgx` is keyed by (gk, id) itself
+  (one probe per group; nothing reads a group by its id); the plugin checks
+  the full gid;
   `artist_rel_b` is a table; `artist_info` is folded into `artist`; no ANALYZE.
   378.2 MB against format 3's 415.3 MB (2026-10-21 dump).
 - `verify.yml` (format4 branch, or by hand) proves it before it ships: the same

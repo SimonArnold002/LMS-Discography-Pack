@@ -38,8 +38,9 @@ plugin's ledger, A2 `THE PACK GROWS IN PLACE`): the same rows with NO secondary
 index, because a delta applied in place splits B-tree pages and only a copy of
 each table in ONE statement packs them full again, which an index (rebuilt in
 one go) would block:
-  * artist_gk / rgx_gk (gk = the gid's first 8 bytes, id) replace the unique
-    gid indexes; the plugin looks up by prefix and checks the full gid;
+  * artist_gk (gk = the gid's first 8 bytes, id) replaces the unique artist
+    gid index, and rgx is KEYED by (gk, id) itself (nothing reads a group by
+    its id), so a group is one probe; the plugin checks the full gid;
   * the table artist_rel_b (b, a, kind) replaces the index on artist_rel(b);
   * artist_info's comment, type and country are columns of artist.
   * no ANALYZE: a fresh pack and a device's rewritten one plan alike.
@@ -165,8 +166,8 @@ CREATE TABLE artist_rel (a INTEGER NOT NULL, b INTEGER NOT NULL, kind INTEGER NO
 CREATE TABLE artist_rel_b (b INTEGER NOT NULL, a INTEGER NOT NULL, kind INTEGER NOT NULL,
                            PRIMARY KEY (b, a, kind)) WITHOUT ROWID;
 CREATE TABLE artist_redirect (gid BLOB PRIMARY KEY, artist INTEGER NOT NULL) WITHOUT ROWID;
-CREATE TABLE rgx (id INTEGER PRIMARY KEY, gid BLOB NOT NULL, boot INTEGER NOT NULL, discogs INTEGER);
-CREATE TABLE rgx_gk (gk BLOB NOT NULL, id INTEGER NOT NULL, PRIMARY KEY (gk, id)) WITHOUT ROWID;
+CREATE TABLE rgx (gk BLOB NOT NULL, id INTEGER NOT NULL, gid BLOB NOT NULL, boot INTEGER NOT NULL, discogs INTEGER,
+                  PRIMARY KEY (gk, id)) WITHOUT ROWID;
 CREATE TABLE rg_alias (rg INTEGER NOT NULL, name TEXT NOT NULL, PRIMARY KEY (rg, name)) WITHOUT ROWID;
 CREATE TABLE rg_edition (rg INTEGER NOT NULL, title TEXT NOT NULL, PRIMARY KEY (rg, title)) WITHOUT ROWID;
 CREATE TABLE rg_url (rg INTEGER NOT NULL, kind INTEGER NOT NULL, url TEXT NOT NULL,
@@ -388,9 +389,9 @@ def build(SRC, OUT, dsc, dump_id):
                   sorted((b, a, k) for (a, b, k) in rel if a in art and b in art))
     c.executemany('INSERT INTO artist_redirect VALUES (?,?)', ((gid(g), a) for g, a in redir))
     groups = sorted(set(rg_alias) | set(eds) | set(rg_links) | set(rg_dg) | boot)
-    c.executemany('INSERT INTO rgx VALUES (?,?,?,?)',
-                  ((g, gid(rg_meta[g][0]), 1 if g in boot else 0, rg_dg.get(g)) for g in groups))
-    c.executemany('INSERT INTO rgx_gk VALUES (?,?)', sorted((gid(rg_meta[g][0])[:8], g) for g in groups))
+    c.executemany('INSERT INTO rgx VALUES (?,?,?,?,?)',
+                  sorted((gid(rg_meta[g][0])[:8], g, gid(rg_meta[g][0]), 1 if g in boot else 0, rg_dg.get(g))
+                         for g in groups))
     c.executemany('INSERT INTO rg_alias VALUES (?,?)', ((g, n) for g in sorted(rg_alias) for n in rg_alias[g]))
     c.executemany('INSERT INTO rg_edition VALUES (?,?)', ((g, t) for g in sorted(eds) for t in eds[g]))
     c.executemany('INSERT INTO rg_url VALUES (?,?,?)',

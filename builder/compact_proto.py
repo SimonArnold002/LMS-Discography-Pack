@@ -8,7 +8,7 @@ would compact it but runs in ONE go and would freeze LMS. Copying each table
 in its key order into a new file, a few thousand rows per step, fills pages
 the way VACUUM does, and a device can yield between steps. That only works
 when nothing has to be built in one go, so format 4 has NO secondary index:
-  * artist_gid / rgx_gid indexes -> tables artist_gk / rgx_gk (gk = the first
+  * artist_gid index -> table artist_gk, rgx keyed by (gk, id) (gk = the first
     8 bytes of the gid, BLOB, with the id; the caller checks the full gid),
   * artist_rel_b index -> table artist_rel_b (b, a, kind),
   * artist_info folded into artist (comment, type, country).
@@ -42,8 +42,8 @@ CREATE TABLE artist_rel (a INTEGER NOT NULL, b INTEGER NOT NULL, kind INTEGER NO
 CREATE TABLE artist_rel_b (b INTEGER NOT NULL, a INTEGER NOT NULL, kind INTEGER NOT NULL,
                            PRIMARY KEY (b, a, kind)) WITHOUT ROWID;
 CREATE TABLE artist_redirect (gid BLOB PRIMARY KEY, artist INTEGER NOT NULL) WITHOUT ROWID;
-CREATE TABLE rgx (id INTEGER PRIMARY KEY, gid BLOB NOT NULL, boot INTEGER NOT NULL, discogs INTEGER);
-CREATE TABLE rgx_gk (gk BLOB NOT NULL, id INTEGER NOT NULL, PRIMARY KEY (gk, id)) WITHOUT ROWID;
+CREATE TABLE rgx (gk BLOB NOT NULL, id INTEGER NOT NULL, gid BLOB NOT NULL, boot INTEGER NOT NULL, discogs INTEGER,
+                  PRIMARY KEY (gk, id)) WITHOUT ROWID;
 CREATE TABLE rg_alias (rg INTEGER NOT NULL, name TEXT NOT NULL, PRIMARY KEY (rg, name)) WITHOUT ROWID;
 CREATE TABLE rg_edition (rg INTEGER NOT NULL, title TEXT NOT NULL, PRIMARY KEY (rg, title)) WITHOUT ROWID;
 CREATE TABLE rg_url (rg INTEGER NOT NULL, kind INTEGER NOT NULL, url TEXT NOT NULL,
@@ -72,8 +72,8 @@ PLAN = [
     ('artist_rel', 'a, b, kind, epon, skey', 'SELECT a, b, kind, epon, skey, a, b, kind FROM s.artist_rel', ['a', 'b', 'kind']),
     ('artist_rel_b', 'b, a, kind', 'SELECT b, a, kind, b, a, kind FROM s.artist_rel INDEXED BY artist_rel_b', ['b', 'a', 'kind']),
     ('artist_redirect', 'gid, artist', 'SELECT gid, artist, gid FROM s.artist_redirect', ['gid']),
-    ('rgx', 'id, gid, boot, discogs', 'SELECT id, gid, boot, discogs, id FROM s.rgx', ['id']),
-    ('rgx_gk', 'gk, id', 'SELECT substr(gid, 1, 8), id, gid FROM s.rgx INDEXED BY rgx_gid', ['gid']),
+    ('rgx', 'gk, id, gid, boot, discogs',
+     'SELECT substr(gid, 1, 8), id, gid, boot, discogs, gid FROM s.rgx INDEXED BY rgx_gid', ['gid']),
     ('rg_alias', 'rg, name', 'SELECT rg, name, rg, name FROM s.rg_alias', ['rg', 'name']),
     ('rg_edition', 'rg, title', 'SELECT rg, title, rg, title FROM s.rg_edition', ['rg', 'title']),
     ('rg_url', 'rg, kind, url', 'SELECT rg, kind, url, rg, kind FROM s.rg_url', ['rg', 'kind']),

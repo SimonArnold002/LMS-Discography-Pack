@@ -208,5 +208,5 @@ for my $c (@CALLS) {
         $name, @s3, @s4, $r3->{$name}{total}, $r4->{$name}{total},
         $r3->{$name}{total} ? 100 * ($r4->{$name}{total} / $r3->{$name}{total} - 1) : 0;
 }
-print "\n", ($bad ? "DIFFERENT: $bad answer(s) differ\n" : "SAME: every answer of format 4 equals format 3's\n");
+print "\n", ($bad ? "DIFFERENT: $bad answer(s) differ\n" : "SAME: every answer of the second run equals the first's\n");
 exit($bad ? 1 : 0);

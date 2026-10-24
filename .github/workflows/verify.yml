@@ -108,6 +108,11 @@ jobs:
           rm -f m/f4w.db
           echo "=== 5. every lookup, both formats" | tee -a report.txt
           perl verify/pack_equiv.pl dsc3 m/f3.db dsc m/f4.db 2>&1 | tee -a report.txt
+          # The new Pack.pm also reads FORMAT 3 (what devices hold until they move to 4),
+          # through changed code (prepared statements, the id check): the same answers
+          # as today's Pack.pm on the same file.
+          echo "=== 6. format 3 through the new Pack.pm against today's" | tee -a report.txt
+          perl verify/pack_equiv.pl dsc3 m/f3.db dsc m/f3.db 2>&1 | tee -a report.txt
 
       - name: Commit the report (also when a step failed)
         if: always()

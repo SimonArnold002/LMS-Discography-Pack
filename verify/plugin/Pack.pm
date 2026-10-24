@@ -53,9 +53,12 @@ package Plugins::Discography::Pack;
 # measured); only a copy of each table in ONE statement packs them full again,
 # and that needs a file with NO secondary index (an index is rebuilt in one
 # go). So format 4 has none:
-#   * artist_gk / rgx_gk (gk = the first 8 bytes of the gid, id) replace the
-#     unique gid indexes: a lookup finds the id by its prefix and checks the
-#     FULL gid on the row, so two gids sharing 8 bytes can never be confused;
+#   * artist_gk (gk = the first 8 bytes of the gid, id) replaces the unique
+#     artist gid index, and rgx is KEYED by (gk, id) itself (nothing reads a
+#     group by its id, so a group is ONE probe: the two-step lookup cost
+#     groups() 3% on the real dump, 2026-10-24); a lookup finds rows by the
+#     prefix and checks the FULL gid, so two gids sharing 8 bytes can never be
+#     confused;
 #   * the TABLE artist_rel_b (b, a, kind) replaces the index on artist_rel(b);
 #   * artist_info's comment, type and country are columns of artist.
 # Every answer is the same as format 3's for the same dump (proved over every
@@ -95,7 +98,7 @@ my %FORMAT_TABLES = (
               artist_name artist_info artist_type release rg_type rg_sec
               namekey_probe) ],
     4 => [ qw(meta artist artist_gk artist_alias artist_url artist_rel artist_rel_b
-              artist_redirect rgx rgx_gk rg_alias rg_edition rg_url
+              artist_redirect rgx rg_alias rg_edition rg_url
               artist_name artist_type release rg_type rg_sec
               namekey_probe) ],
 );
@@ -416,8 +419,8 @@ sub groups {
             my %want;
             @want{@chunk} = () if $f4;
             my $rows = $f4
-                ? $h->selectall_arrayref('SELECT r.id, r.gid, r.boot, r.discogs FROM rgx_gk k JOIN rgx r ON r.id = k.id'
-                                         . ' WHERE k.gk IN (' . join(',', map { "X'" . substr($_, 0, 16) . "'" } @chunk) . ')')
+                ? $h->selectall_arrayref('SELECT id, gid, boot, discogs FROM rgx'
+                                         . ' WHERE gk IN (' . join(',', map { "X'" . substr($_, 0, 16) . "'" } @chunk) . ')')
                 : $h->selectall_arrayref('SELECT id, gid, boot, discogs FROM rgx WHERE gid IN ('
                                          . join(',', map { "X'$_'" } @chunk) . ')');
             for my $r (@$rows) {

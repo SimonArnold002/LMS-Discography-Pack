@@ -64,7 +64,10 @@ class TestBuild(Built):
         cols = [r[1] for r in self.q(self.v1, 'PRAGMA table_info(artist_rel)')]
         self.assertEqual(cols, ['a', 'b', 'kind', 'epon', 'skey'])
         # Format 4: the lookups are tables, artist_info is on the artist row.
-        self.assertTrue({'artist_gk', 'rgx_gk', 'artist_rel_b'} <= names)
+        self.assertTrue({'artist_gk', 'artist_rel_b'} <= names)
+        self.assertNotIn('rgx_gk', names)
+        self.assertEqual([r[1] for r in self.q(self.v1, 'PRAGMA table_info(rgx)')],
+                         ['gk', 'id', 'gid', 'boot', 'discogs'])
         self.assertNotIn('artist_info', names)
         self.assertEqual([r[1] for r in self.q(self.v1, 'PRAGMA table_info(artist)')],
                          ['id', 'gid', 'name', 'ngroups', 'comment', 'type', 'country'])
@@ -79,8 +82,8 @@ class TestBuild(Built):
         for v in (self.v1, self.v2):
             self.assertEqual(sorted(self.q(v, 'SELECT gk, id FROM artist_gk')),
                              sorted(self.q(v, 'SELECT substr(gid, 1, 8), id FROM artist')))
-            self.assertEqual(sorted(self.q(v, 'SELECT gk, id FROM rgx_gk')),
-                             sorted(self.q(v, 'SELECT substr(gid, 1, 8), id FROM rgx')))
+            self.assertEqual(self.q(v, 'SELECT count(*) FROM rgx WHERE gk != substr(gid, 1, 8)')[0][0], 0)
+            self.assertGreater(self.q(v, 'SELECT count(*) FROM rgx')[0][0], 0)
             self.assertEqual(sorted(self.q(v, 'SELECT b, a, kind FROM artist_rel_b')),
                              sorted(self.q(v, 'SELECT b, a, kind FROM artist_rel')))
             self.assertGreater(len(self.q(v, 'SELECT 1 FROM artist_rel_b')), 0)
