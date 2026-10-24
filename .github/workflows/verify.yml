@@ -9,7 +9,7 @@
 #   4. rewritten table by table (what a device does after a delta): same size
 #   5. verify/pack_equiv.pl: every lookup the plugin makes, every id, both
 #      formats, the same answers; and each call timed
-# verify/dsc/Discography/Pack.pm is the plugin's Pack.pm under test (a copy of
+# verify/plugin/Pack.pm is the plugin's Pack.pm under test (a copy of
 # LMS-Discography's working tree, not yet on its dev); Sources.pm comes from
 # DSC_REF as for the build, so the name keys match the pack's.
 name: Verify format 4
@@ -55,7 +55,7 @@ jobs:
         run: |
           dump=$(curl -fsSL "https://raw.githubusercontent.com/$REPO/main/manifest-v3.json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["latest"])')
           echo "dump=$dump" >> "$GITHUB_OUTPUT"
-          cp verify/dsc/Discography/Pack.pm dsc/Discography/Pack.pm
+          cp verify/plugin/Pack.pm dsc/Discography/Pack.pm
           echo "dump $dump; Pack.pm $(sha1sum dsc/Discography/Pack.pm | cut -c1-12), Sources.pm $(sha1sum dsc/Discography/Sources.pm | cut -c1-12) from $DSC_REF"
 
       - name: Tests on the made-up dump

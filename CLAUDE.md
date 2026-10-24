@@ -45,7 +45,7 @@ what `make_delta.apply()` does.
 - `verify.yml` (format4 branch, or by hand) proves it before it ships: the same
   dump in both formats through the plugin's own Pack.pm, every lookup, every id
   (`verify/pack_equiv.pl`), plus the rows (`verify/compare_tables.py`) and the
-  table-by-table rewrite's size. `verify/dsc/Discography/Pack.pm` is a COPY of
+  table-by-table rewrite's size. `verify/plugin/Pack.pm` is a COPY of
   LMS-Discography's working Pack.pm under test; refresh it when Pack.pm changes.
 - Pushing format 4 to main makes the scheduled build publish manifest-v4 and
   stop updating manifest-v3: only once verify passes and the plugin side
