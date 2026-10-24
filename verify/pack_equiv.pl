@@ -12,16 +12,24 @@
 # same hash for every call, in the same order. Every call is timed too, so the
 # report shows whether format 4 is slower anywhere.
 #
-# Usage: perl verify/pack_equiv.pl <dir holding Discography/Pack.pm + Sources.pm> <f3.db> <f4.db> [sample]
+# EACH FORMAT RUNS ITS OWN PLUGIN CODE, in its own process: format 3 with the
+# Pack.pm users have today (the one shipped with it), format 4 with the new
+# one. So "the same answers" is today's plugin against tomorrow's, and so is
+# the speed.
+#
+# Usage: perl verify/pack_equiv.pl <dsc3 dir> <f3.db> <dsc4 dir> <f4.db> [sample]
+#   <dscN dir> holds Discography/Pack.pm + Discography/Sources.pm
 #   sample: test only every n-th id (default 1 = all; a local run on a small pack)
 # Exit 0 = every answer the same; 1 = a difference (the first ones are printed).
 use strict;
 use warnings;
 
-my ($dsc, $f3, $f4, $every) = @ARGV;
-die "usage: pack_equiv.pl <dsc dir> <f3.db> <f4.db> [sample]\n" unless $dsc && $f3 && $f4;
+my ($dsc3, $f3, $dsc4, $f4, $every) = @ARGV;
+die "usage: pack_equiv.pl <dsc3 dir> <f3.db> <dsc4 dir> <f4.db> [sample]\n" unless $dsc3 && $f3 && $dsc4 && $f4;
 $every ||= 1;
--f "$dsc/Discography/Pack.pm" && -f "$dsc/Discography/Sources.pm" or die "no Pack.pm/Sources.pm under $dsc/Discography\n";
+for my $dsc ($dsc3, $dsc4) {
+    -f "$dsc/Discography/Pack.pm" && -f "$dsc/Discography/Sources.pm" or die "no Pack.pm/Sources.pm under $dsc/Discography\n";
+}
 
 our (%PREF, $CACHEDIR);
 BEGIN {
@@ -54,28 +62,47 @@ use DBI;
 use Digest::MD5 ();
 use File::Temp ();
 use JSON::PP ();
+use Storable ();
 use Time::HiRes ();
 
 my $tmp = File::Temp->newdir();
-mkdir "$tmp/Plugins" or die;
-symlink Cwd::abs_path("$dsc/Discography"), "$tmp/Plugins/Discography" or die "symlink: $!";
-unshift @INC, "$tmp";
-$CACHEDIR = "$tmp/cache";
-mkdir $CACHEDIR or die; mkdir "$CACHEDIR/DiscographyPack" or die;
-symlink Cwd::abs_path($f3), "$CACHEDIR/DiscographyPack/f3.db" or die;
-symlink Cwd::abs_path($f4), "$CACHEDIR/DiscographyPack/f4.db" or die;
-
-require Plugins::Discography::Sources;
-{   # API::_nameKey as the plugin has it, without loading API.pm.
-    no strict 'refs';
-    *{'Plugins::Discography::API::_nameKey'} = sub {
-        my ($name) = @_; $name = defined $name ? $name : '';
-        utf8::encode($name) if utf8::is_utf8($name);
-        return Plugins::Discography::Sources::_norm($name);
-    };
-}
-require Plugins::Discography::Pack;
 my $PACK = 'Plugins::Discography::Pack';
+
+# In a child: load THIS dsc dir's plugin code and point it at one file.
+sub loadPlugin {
+    my ($dsc, $file) = @_;
+    my $root = "$tmp/" . Digest::MD5::md5_hex($dsc . $file);
+    mkdir $root; mkdir "$root/Plugins";
+    symlink Cwd::abs_path("$dsc/Discography"), "$root/Plugins/Discography" or die "symlink: $!";
+    unshift @INC, $root;
+    $CACHEDIR = "$root/cache";
+    mkdir $CACHEDIR; mkdir "$CACHEDIR/DiscographyPack";
+    symlink Cwd::abs_path($file), "$CACHEDIR/DiscographyPack/pack-under-test.db" or die;
+    require Plugins::Discography::Sources;
+    {   # API::_nameKey as the plugin has it, without loading API.pm.
+        no strict 'refs'; no warnings 'redefine';
+        *{'Plugins::Discography::API::_nameKey'} = sub {
+            my ($name) = @_; $name = defined $name ? $name : '';
+            utf8::encode($name) if utf8::is_utf8($name);
+            return Plugins::Discography::Sources::_norm($name);
+        };
+    }
+    require Plugins::Discography::Pack;
+    %PREF = (mb_pack => 1, mb_pack_file => 'pack-under-test.db');
+    $PACK->reload;
+}
+
+# Run $code in a child process; its return value comes back through a file.
+sub inChild {
+    my ($code) = @_;
+    my $out = "$tmp/child-" . rand() . '.st';
+    my $pid = fork() // die "fork: $!";
+    if (!$pid) { my $r = $code->(); Storable::nstore($r, $out); POSIX::_exit(0) }
+    waitpid($pid, 0);
+    die "child failed ($?)\n" if $? || !-f $out;
+    return Storable::retrieve($out);
+}
+require POSIX;
 
 # ---- the ids, from the format-3 file -------------------------------------
 my $d = DBI->connect("dbi:SQLite:dbname=$f3", '', '', { RaiseError => 1, sqlite_unicode => 1 });
@@ -116,13 +143,14 @@ my @CALLS = (
 sub warm { my ($f) = @_; open my $fh, '<:raw', $f or die "$f: $!"; my $buf; 1 while read($fh, $buf, 1 << 20); close $fh }
 
 sub pass {
-    my ($file, $real) = @_;
-    %PREF = (mb_pack => 1, mb_pack_file => $file);
-    $PACK->reload;
+    my ($dsc, $real) = @_;
+    loadPlugin($dsc, $real);
     warm($real);
     my $info = $PACK->info;
-    die "$file did not open: " . ($info->{refused} // '?') . "\n" unless $PACK->available;
-    print "pass $file: format $info->{format}, dump $info->{dump}, $info->{bytes} bytes, name keys $info->{namekeys}\n";
+    die "$real did not open: " . ($info->{refused} // '?') . "\n" unless $PACK->available;
+    printf "pass %s with %s/Discography/Pack.pm (%s): format %s, dump %s, %s bytes, name keys %s\n",
+        $real, $dsc, substr(Digest::MD5::md5_hex(do { local (@ARGV, $/) = ("$dsc/Discography/Pack.pm"); <> }), 0, 12),
+        $info->{format}, $info->{dump}, $info->{bytes}, $info->{namekeys};
     my %r;
     for my $c (@CALLS) {
         my ($name, $set, $code) = @$c;
@@ -141,8 +169,9 @@ sub pass {
     return \%r;
 }
 
-my $r3 = pass('f3.db', $f3);
-my $r4 = pass('f4.db', $f4);
+$| = 1;
+my $r3 = inChild(sub { pass($dsc3, $f3) });
+my $r4 = inChild(sub { pass($dsc4, $f4) });
 
 # ---- the same answers ------------------------------------------------------
 my $bad = 0;
@@ -154,11 +183,13 @@ for my $c (@CALLS) {
     $bad += @diff;
     printf "  %-14s %9d calls, %d differ%s\n", $name, length($a) / 16, scalar @diff,
         $r3->{$name}{hits} == $r4->{$name}{hits} ? '' : " (answered: $r3->{$name}{hits} vs $r4->{$name}{hits})";
-    for my $i (@diff[0 .. ($#diff < 2 ? $#diff : 2)]) {
-        my $arg = $ids{$set}[$i];
-        my @out;
-        for my $f ('f3.db', 'f4.db') { %PREF = (mb_pack => 1, mb_pack_file => $f); $PACK->reload; push @out, $J->encode($code->($arg)) }
-        printf "    %s\n      3: %.400s\n      4: %.400s\n", ref $arg ? "[$arg->[0], ...]" : $arg, @out;
+    my @show = @diff[0 .. ($#diff < 2 ? $#diff : 2)];
+    next unless @show;
+    my @args = map { $ids{$set}[$_] } @show;
+    my @o3 = @{ inChild(sub { loadPlugin($dsc3, $f3); [ map { $J->encode($code->($_)) } @args ] }) };
+    my @o4 = @{ inChild(sub { loadPlugin($dsc4, $f4); [ map { $J->encode($code->($_)) } @args ] }) };
+    for my $k (0 .. $#args) {
+        printf "    %s\n      3: %.400s\n      4: %.400s\n", ref $args[$k] ? "[$args[$k][0], ...]" : $args[$k], $o3[$k], $o4[$k];
     }
 }
 

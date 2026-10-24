@@ -102,7 +102,10 @@ my %FORMAT_TABLES = (
 my %TABLES  = map { ($_ => 1) } map { @$_ } values %FORMAT_TABLES;
 my %INDEXES = map { ($_ => 1) } qw(artist_gid rgx_gid artist_rel_b);
 
-my $UUID_RE = qr/^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i;
+# \z, not $: `$` also matches before a trailing newline, and "<uuid>\n" then put
+# the newline inside the SQL literal, the read failed and the pack was closed
+# for the rest of the run (found 2026-10-24 while timing format 4).
+my $UUID_RE = qr/^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}\z/i;
 
 my ($dbh, $broken, $info, $names);    # $names: format 2's small id -> name tables
 my $held;    # PackUpdate is changing the file: no reads until it releases
@@ -265,25 +268,50 @@ sub info {
 
 # An mbid as a blob literal, or undef for anything that is not a uuid (which
 # is all that ever reaches SQL from here, so the literal is safe).
-sub _blob {
-    my ($mbid) = @_;
-    return undef unless defined $mbid && $mbid =~ $UUID_RE;
-    (my $h = lc $mbid) =~ s/-//g;
-    return "X'$h'";
-}
+sub _blob { my $h = _hex($_[0]); return defined $h ? "X'$h'" : undef }
 
-# The first 8 bytes of an mbid as a blob literal (format 4's gk), or undef.
-sub _prefix {
+# An mbid's 32 hex digits (lower case, no dashes), or undef for anything that
+# is not a uuid. tr, not s///g: a third faster, the same answers (2026-10-24).
+sub _hex {
     my ($mbid) = @_;
     return undef unless defined $mbid && $mbid =~ $UUID_RE;
-    (my $h = lc $mbid) =~ s/-//g;
-    return "X'" . substr($h, 0, 16) . "'";
+    (my $h = lc $mbid) =~ tr/-//d;
+    return $h;
 }
 
 sub _f4 { return ($info && ($info->{format} // 0) >= 4) ? 1 : 0 }
 
-sub _uuid {
-    my $h = unpack('H32', $_[0] // '');
+# An mbid's 16 bytes, or undef.
+sub _raw { my $h = _hex($_[0]); return defined $h ? pack('H32', $h) : undef }
+
+# A FIXED statement is prepared once per open file and reused (the SQL text is
+# the key; `3`: a handle a failed read left active is replaced, not reused).
+# Parsing each call cost format 4's longer joins 4-15% (measured 2026-10-24,
+# LMS-Discography-Pack verify run on the 2026-10-21 dump).
+sub _rows { my ($h, $sql, @bind) = @_; return $h->selectall_arrayref($h->prepare_cached($sql, undef, 3), undef, @bind) }
+sub _row {
+    my ($h, $sql, @bind) = @_;
+    my $sth = $h->prepare_cached($sql, undef, 3);
+    $sth->execute(@bind);
+    my @r = $sth->fetchrow_array;
+    $sth->finish;
+    return @r;
+}
+# The same with every value bound as a BLOB (a gid's bytes).
+sub _rowBlob {
+    my ($h, $sql, @bind) = @_;
+    my $sth = $h->prepare_cached($sql, undef, 3);
+    $sth->bind_param($_ + 1, $bind[$_], DBI::SQL_BLOB()) for 0 .. $#bind;
+    $sth->execute;
+    my @r = $sth->fetchrow_array;
+    $sth->finish;
+    return @r;
+}
+
+sub _uuid { return _uuidHex(unpack('H32', $_[0] // '')) }
+
+sub _uuidHex {
+    my ($h) = @_;
     return length $h == 32
         ? join('-', substr($h, 0, 8), substr($h, 8, 4), substr($h, 12, 4), substr($h, 16, 4), substr($h, 20))
         : '';
@@ -292,12 +320,12 @@ sub _uuid {
 # The artist's pack id: its own gid, else a merged-away gid's current artist.
 sub _artistId {
     my ($h, $mbid) = @_;
-    my $b = _blob($mbid) or return undef;
+    my $raw = _raw($mbid) or return undef;
     my ($id) = _f4()
-        ? $h->selectrow_array('SELECT a.id FROM artist_gk k JOIN artist a ON a.id = k.id'
-                              . ' WHERE k.gk = ' . _prefix($mbid) . " AND a.gid = $b")
-        : $h->selectrow_array("SELECT id FROM artist WHERE gid = $b");
-    ($id) = $h->selectrow_array("SELECT artist FROM artist_redirect WHERE gid = $b") unless defined $id;
+        ? _rowBlob($h, 'SELECT a.id FROM artist_gk k JOIN artist a ON a.id = k.id WHERE k.gk = ? AND a.gid = ?',
+                   substr($raw, 0, 8), $raw)
+        : _rowBlob($h, 'SELECT id FROM artist WHERE gid = ?', $raw);
+    ($id) = _rowBlob($h, 'SELECT artist FROM artist_redirect WHERE gid = ?', $raw) unless defined $id;
     return $id;
 }
 
@@ -318,11 +346,11 @@ sub artistRead {
         my ($h) = @_;
         my $id = _artistId($h, $mbid);
         return () unless defined $id;
-        my ($gid, $name, $ng) = $h->selectrow_array('SELECT gid, name, ngroups FROM artist WHERE id = ?', undef, $id);
+        my ($gid, $name, $ng) = _row($h, 'SELECT gid, name, ngroups FROM artist WHERE id = ?', $id);
         my @aliases = map { { name => $_->[0], locale => (length $_->[1] ? $_->[1] : undef),
                               primary => ($_->[2] ? 1 : undef) } }
                       sort { $a->[0] cmp $b->[0] || $a->[1] cmp $b->[1] }
-                      @{ $h->selectall_arrayref('SELECT name, locale, prim FROM artist_alias WHERE artist = ?', undef, $id) };
+                      @{ _rows($h, 'SELECT name, locale, prim FROM artist_alias WHERE artist = ?', $id) };
         my @rels;
         # MusicBrainz's order within a type: format 3 by each relation's own
         # key, format 2 by its rank over the whole table (the same order).
@@ -337,13 +365,13 @@ sub artistRead {
                   . " JOIN artist t ON t.id = r.a WHERE x.b = ? ORDER BY r.kind, $order"
                   : "SELECT r.kind, r.epon, t.gid, t.name FROM artist_rel r JOIN artist t ON t.id = r.$other"
                   . " WHERE r.$me = ? ORDER BY r.kind, $order";
-            for my $x (@{ $h->selectall_arrayref($q, undef, $id) }) {
+            for my $x (@{ _rows($h, $q, $id) }) {
                 push @rels, { type => $KIND{ $x->[0] }, direction => $d, 'target-type' => 'artist',
                               attributes => $x->[1] ? [ 'eponymous' ] : [],
                               artist => { id => _uuid($x->[2]), name => $x->[3] } };
             }
         }
-        for my $u (@{ $h->selectall_arrayref('SELECT svc, ext FROM artist_url WHERE artist = ? ORDER BY svc, ext', undef, $id) }) {
+        for my $u (@{ _rows($h, 'SELECT svc, ext FROM artist_url WHERE artist = ? ORDER BY svc, ext', $id) }) {
             my $fmt = $SVC_URL[ $u->[0] ] or next;
             push @rels, { 'target-type' => 'url', url => { resource => sprintf($fmt, $u->[1]) } };
         }
@@ -361,9 +389,9 @@ sub collaboration {
         my ($h) = @_;
         my $id = _artistId($h, $mbid);
         return undef unless defined $id;
-        my ($n) = $h->selectrow_array('SELECT count(DISTINCT a) FROM ' . (_f4() ? 'artist_rel_b' : 'artist_rel')
-                                      . ' WHERE b = ? AND kind = 2', undef, $id);
-        my ($g) = $h->selectrow_array('SELECT ngroups FROM artist WHERE id = ?', undef, $id);
+        my ($n) = _row($h, 'SELECT count(DISTINCT a) FROM ' . (_f4() ? 'artist_rel_b' : 'artist_rel')
+                         . ' WHERE b = ? AND kind = 2', $id);
+        my ($g) = _row($h, 'SELECT ngroups FROM artist WHERE id = ?', $id);
         return { members => $n || 0, groups => $g || 0 };
     });
 }
@@ -378,18 +406,24 @@ sub groups {
     return _try('groups', sub {
         my ($h) = @_;
         my (%out, %byId);
-        my @ids = grep { defined _blob($_) } @{ $mbids || [] };
-        while (my @chunk = splice(@ids, 0, IN_CHUNK)) {
+        # Each mbid checked and reduced to its 32 hex digits ONCE.
+        my @hex = grep { defined } map { _hex($_) } @{ $mbids || [] };
+        my $f4 = _f4();
+        while (my @chunk = splice(@hex, 0, IN_CHUNK)) {
             # Format 4: candidates by the gid's first 8 bytes, kept only when the
-            # FULL gid is one asked for.
-            my $rows = _f4()
+            # FULL gid is one asked for (checked here, on the hex the answer is
+            # named by anyway: half the SQL to parse, no extra conversion).
+            my %want;
+            @want{@chunk} = () if $f4;
+            my $rows = $f4
                 ? $h->selectall_arrayref('SELECT r.id, r.gid, r.boot, r.discogs FROM rgx_gk k JOIN rgx r ON r.id = k.id'
-                                         . ' WHERE k.gk IN (' . join(',', map { _prefix($_) } @chunk) . ')'
-                                         . ' AND r.gid IN (' . join(',', map { _blob($_) } @chunk) . ')')
+                                         . ' WHERE k.gk IN (' . join(',', map { "X'" . substr($_, 0, 16) . "'" } @chunk) . ')')
                 : $h->selectall_arrayref('SELECT id, gid, boot, discogs FROM rgx WHERE gid IN ('
-                                         . join(',', map { _blob($_) } @chunk) . ')');
+                                         . join(',', map { "X'$_'" } @chunk) . ')');
             for my $r (@$rows) {
-                my $m = _uuid($r->[1]);
+                my $hx = unpack('H32', $r->[1] // '');
+                next if $f4 && !exists $want{$hx};
+                my $m = _uuidHex($hx);
                 $byId{ $r->[0] } = $out{$m} = {
                     boot => $r->[2] ? 1 : 0,
                     discogs => (!defined $r->[3] ? undef
@@ -430,12 +464,12 @@ sub sameName {
         # Format 4 holds the description, type and country on the artist row.
         my ($cols, $join) = _f4() ? ('a.comment, a.type, a.country', '')
                                   : ('i.comment, i.type, i.country', ' LEFT JOIN artist_info i ON i.artist = a.id');
-        my $rows = $h->selectall_arrayref(
+        my $rows = _rows($h,
             "SELECT a.id, a.gid, a.name, a.ngroups, $cols,"
           . " (SELECT al.name FROM artist_alias al WHERE al.artist = a.id AND al.locale = 'en' AND al.prim = 1"
           . '  ORDER BY al.name LIMIT 1)'
           . " FROM artist_name n JOIN artist a ON a.id = n.artist$join"
-          . ' WHERE n.key = ? ORDER BY a.ngroups DESC, a.name, a.id', undef, $key);
+          . ' WHERE n.key = ? ORDER BY a.ngroups DESC, a.name, a.id', $key);
         return [ map { {
             mbid           => _uuid($_->[1]),
             name           => $_->[2],

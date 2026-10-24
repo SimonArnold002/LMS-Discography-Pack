@@ -10,8 +10,11 @@
 #   5. verify/pack_equiv.pl: every lookup the plugin makes, every id, both
 #      formats, the same answers; and each call timed
 # verify/plugin/Pack.pm is the plugin's Pack.pm under test (a copy of
-# LMS-Discography's working tree, not yet on its dev); Sources.pm comes from
-# DSC_REF as for the build, so the name keys match the pack's.
+# LMS-Discography's working tree, not yet on its dev) and reads format 4;
+# verify/plugin/Pack-0.56.96.pm is the one users run today and reads format 3.
+# Each runs in its own process, so the answers and the speed compare today's
+# plugin with tomorrow's. Sources.pm comes from DSC_REF as for the build, so
+# the name keys match the pack's.
 name: Verify format 4
 
 on:
@@ -56,6 +59,9 @@ jobs:
           dump=$(curl -fsSL "https://raw.githubusercontent.com/$REPO/main/manifest-v3.json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["latest"])')
           echo "dump=$dump" >> "$GITHUB_OUTPUT"
           cp verify/plugin/Pack.pm dsc/Discography/Pack.pm
+          mkdir -p dsc3/Discography
+          cp verify/plugin/Pack-0.56.96.pm dsc3/Discography/Pack.pm
+          cp dsc/Discography/Sources.pm dsc3/Discography/Sources.pm
           echo "dump $dump; Pack.pm $(sha1sum dsc/Discography/Pack.pm | cut -c1-12), Sources.pm $(sha1sum dsc/Discography/Sources.pm | cut -c1-12) from $DSC_REF"
 
       - name: Tests on the made-up dump
@@ -89,7 +95,7 @@ jobs:
           dump="${{ steps.plan.outputs.dump }}"
           {
             echo "=== format 4 verify, dump $dump, $(date -u +%FT%TZ)"
-            echo "plugin Pack.pm $(sha1sum dsc/Discography/Pack.pm | cut -c1-12), Sources.pm $(sha1sum dsc/Discography/Sources.pm | cut -c1-12) ($DSC_REF)"
+            echo "format 3 read by Pack-0.56.96.pm $(sha1sum dsc3/Discography/Pack.pm | cut -c1-12); format 4 by Pack.pm $(sha1sum dsc/Discography/Pack.pm | cut -c1-12); Sources.pm $(sha1sum dsc/Discography/Sources.pm | cut -c1-12) ($DSC_REF)"
             echo "format 3 published: $(stat -c %s m/f3.db) bytes; format 4 built: $(stat -c %s m/f4.db) bytes"
           } | tee report.txt
           echo "=== 3. the builder's rows against the format-3 pack converted" | tee -a report.txt
@@ -101,7 +107,7 @@ jobs:
           echo "built $(stat -c %s m/f4.db) bytes, rewritten $(stat -c %s m/f4w.db) bytes" | tee -a report.txt
           rm -f m/f4w.db
           echo "=== 5. every lookup, both formats" | tee -a report.txt
-          perl verify/pack_equiv.pl dsc m/f3.db m/f4.db 2>&1 | tee -a report.txt
+          perl verify/pack_equiv.pl dsc3 m/f3.db dsc m/f4.db 2>&1 | tee -a report.txt
 
       - name: Commit the report (also when a step failed)
         if: always()
