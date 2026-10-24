@@ -1,1 +1,58 @@
-no report: a step before Check failed
+=== format 4 verify, dump 20261021-002201, 2026-10-24T10:49:01Z
+plugin Pack.pm 83cceec2f9e1, Sources.pm 116920a51a03 (dev)
+format 3 published: 415346688 bytes; format 4 built: 378150912 bytes
+=== 3. the builder's rows against the format-3 pack converted
+  artist            2,072,162 rows
+  artist_alias        545,388 rows
+  artist_gk         2,072,162 rows
+  artist_name       2,071,345 rows
+  artist_redirect      90,179 rows
+  artist_rel          613,123 rows
+  artist_rel_b        613,123 rows
+  artist_type               6 rows
+  artist_url        1,585,849 rows
+  meta                      4 rows
+  namekey_probe            32 rows
+  release           1,050,747 rows
+  rg_alias             68,764 rows
+  rg_edition          242,296 rows
+  rg_sec                   12 rows
+  rg_type                   5 rows
+  rg_url              556,065 rows
+  rgx                 746,733 rows
+  rgx_gk              746,733 rows
+tables: SAME
+=== 4. rewritten table by table (a device after a delta)
+m/f4w.db: 378,150,912 bytes in 1.7 s; the longest table: artist 457 ms
+the same rows VACUUMed: 378,150,912 bytes (+0 for the table-by-table copy)
+built 378150912 bytes, rewritten 378150912 bytes
+=== 5. every lookup, both formats
+ids: 2182341 artists (with redirects and misses), 1855456 name keys, 11146 group calls, 15683 release calls
+pass f3.db: format 3, dump 20261021-002201, 415346688 bytes, name keys ok
+  artistRead       2182341 calls   2162341 answered    257.9 s
+  collaboration    2182341 calls   2162341 answered    104.2 s
+  sameName         1855456 calls   1835456 answered     85.3 s
+  groups             11146 calls     11146 answered     15.8 s
+  releases           15683 calls     15683 answered     14.6 s
+pass f4.db: format 4, dump 20261021-002201, 378150912 bytes, name keys ok
+  artistRead       2182341 calls   2162341 answered    273.6 s
+  collaboration    2182341 calls   2162341 answered    108.7 s
+  sameName         1855456 calls   1835456 answered     73.6 s
+  groups             11146 calls     11146 answered     18.1 s
+  releases           15683 calls     15683 answered     14.7 s
+
+answers:
+  artistRead       2182341 calls, 0 differ
+  collaboration    2182341 calls, 0 differ
+  sameName         1855456 calls, 0 differ
+  groups             11146 calls, 0 differ
+  releases           15683 calls, 0 differ
+
+speed (ms per call: median / 95% / 99% / slowest; format 3 -> format 4):
+  artistRead      0.093 /  0.121 /  0.154 /    3.38  ->   0.099 /  0.129 /  0.171 /    3.80   total  257.9 s ->  273.6 s (+6%)
+  collaboration   0.042 /  0.052 /  0.059 /    0.57  ->   0.044 /  0.054 /  0.059 /    0.54   total  104.2 s ->  108.7 s (+4%)
+  sameName        0.033 /  0.043 /  0.067 /    1.40  ->   0.028 /  0.035 /  0.051 /    1.14   total   85.3 s ->   73.6 s (-14%)
+  groups          0.790 /  0.861 /  1.133 /    2.41  ->   0.982 /  1.072 /  1.650 /    3.16   total   15.8 s ->   18.1 s (+15%)
+  releases        0.532 /  0.591 /  0.629 /    1.63  ->   0.534 /  0.570 /  0.641 /    1.52   total   14.6 s ->   14.7 s (+1%)
+
+SAME: every answer of format 4 equals format 3's
