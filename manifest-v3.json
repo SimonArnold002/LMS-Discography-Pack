@@ -17,17 +17,26 @@
    "size": 574077,
    "to": "20261021-002201",
    "url": "https://github.com/SimonArnold002/LMS-Discography-Pack/releases/download/pack-20261021-002201/delta-20261017-002244-20261021-002201.db.gz"
+  },
+  {
+   "db_sha1": "fc072a4c4745e4af4e4a532fb60fcd33e2c9b871",
+   "db_size": 753664,
+   "from": "20261021-002201",
+   "sha1": "5dbdd1a217646f7a4a27eb5a366fe3d59ccc1765",
+   "size": 460692,
+   "to": "20261024-102842",
+   "url": "https://github.com/SimonArnold002/LMS-Discography-Pack/releases/download/pack-20261024-102842/delta-20261021-002201-20261024-102842.db.gz"
   }
  ],
  "format": 3,
- "latest": "20261021-002201",
+ "latest": "20261024-102842",
  "pack": {
-  "db_sha1": "e48809a88d8162400866724212ad72621394b929",
-  "db_size": 415346688,
-  "dump": "20261021-002201",
-  "sha1": "a08b1399631b094132fc56d5293006a179c37bac",
-  "size": 268545939,
-  "url": "https://github.com/SimonArnold002/LMS-Discography-Pack/releases/download/pack-20261021-002201/pack-20261021-002201.db.gz"
+  "db_sha1": "92de894901ac2fa26b23598e43008a641c279bb0",
+  "db_size": 415764480,
+  "dump": "20261024-102842",
+  "sha1": "43ed0dc1ce5032135fa195f30fa173de206114de",
+  "size": 268858359,
+  "url": "https://github.com/SimonArnold002/LMS-Discography-Pack/releases/download/pack-20261024-102842/pack-20261024-102842.db.gz"
  },
- "updated": "2026-10-21T12:15:37Z"
+ "updated": "2026-10-24T16:41:35Z"
 }
