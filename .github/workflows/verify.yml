@@ -1,0 +1,118 @@
+# FORMAT 4 BEFORE IT SHIPS: the builder's format 4 against the published format
+# 3 of the SAME dump, through the plugin's own Pack.pm. Runs on the format4
+# branch only (main keeps building format 3 until this passes) or by hand.
+# Builds and publishes nothing; commits its report to verify-reports/.
+#
+#   1. the dump of the newest published format-3 pack (MusicBrainz keeps two)
+#   2. format 4 built from that dump by builder/build_pack.py
+#   3. its rows against the format-3 pack converted by compact_proto.py's rules
+#   4. rewritten table by table (what a device does after a delta): same size
+#   5. verify/pack_equiv.pl: every lookup the plugin makes, every id, both
+#      formats, the same answers; and each call timed
+# verify/dsc/Discography/Pack.pm is the plugin's Pack.pm under test (a copy of
+# LMS-Discography's working tree, not yet on its dev); Sources.pm comes from
+# DSC_REF as for the build, so the name keys match the pack's.
+name: Verify format 4
+
+on:
+  push:
+    branches: [format4]
+    paths:
+      - .github/workflows/verify.yml
+      - verify/**
+      - builder/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pack
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      DSC_REF: ${{ vars.DSC_REF || 'dev' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: LMS-Discography's Sources.pm (the name keys)
+        uses: actions/checkout@v4
+        with:
+          repository: SimonArnold002/LMS-Discography
+          ref: ${{ env.DSC_REF }}
+          path: dsc
+          sparse-checkout: Discography/Sources.pm
+          sparse-checkout-cone-mode: false
+
+      - name: Which dump, and the plugin code under test
+        id: plan
+        run: |
+          dump=$(curl -fsSL "https://raw.githubusercontent.com/$REPO/main/manifest-v3.json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["latest"])')
+          echo "dump=$dump" >> "$GITHUB_OUTPUT"
+          cp verify/dsc/Discography/Pack.pm dsc/Discography/Pack.pm
+          echo "dump $dump; Pack.pm $(sha1sum dsc/Discography/Pack.pm | cut -c1-12), Sources.pm $(sha1sum dsc/Discography/Sources.pm | cut -c1-12) from $DSC_REF"
+
+      - name: Tests on the made-up dump
+        run: DSC_DIR="$PWD/dsc" python3 -m unittest discover -s tests -v
+
+      - name: Tools and disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get update -qq && sudo apt-get install -y -qq lbzip2 libdbi-perl libdbd-sqlite3-perl
+          perl -MDBD::SQLite -e 'print "DBD::SQLite $DBD::SQLite::VERSION, SQLite $DBD::SQLite::sqlite_version\n"'
+          df -h . && free -g
+
+      - name: The published format-3 pack
+        run: |
+          dump="${{ steps.plan.outputs.dump }}"
+          mkdir -p m
+          gh release download "pack-$dump" -R "$REPO" -p "pack-$dump.db.gz" -D m
+          gunzip m/*.gz && mv "m/pack-$dump.db" m/f3.db && ls -l m
+
+      - name: Fetch the same dump
+        run: python3 -I builder/fetch_dump.py "${{ steps.plan.outputs.dump }}" work
+
+      - name: Build format 4
+        run: |
+          python3 -I builder/build_pack.py work m/f4.db --dsc "$PWD/dsc" --dump "${{ steps.plan.outputs.dump }}"
+          rm -rf work
+
+      - name: Check
+        run: |
+          set -o pipefail
+          dump="${{ steps.plan.outputs.dump }}"
+          {
+            echo "=== format 4 verify, dump $dump, $(date -u +%FT%TZ)"
+            echo "plugin Pack.pm $(sha1sum dsc/Discography/Pack.pm | cut -c1-12), Sources.pm $(sha1sum dsc/Discography/Sources.pm | cut -c1-12) ($DSC_REF)"
+            echo "format 3 published: $(stat -c %s m/f3.db) bytes; format 4 built: $(stat -c %s m/f4.db) bytes"
+          } | tee report.txt
+          echo "=== 3. the builder's rows against the format-3 pack converted" | tee -a report.txt
+          python3 -I builder/compact_proto.py m/f3.db m/f3conv.db 5000 > /dev/null
+          python3 -I verify/compare_tables.py m/f4.db m/f3conv.db | tee -a report.txt
+          rm -f m/f3conv.db
+          echo "=== 4. rewritten table by table (a device after a delta)" | tee -a report.txt
+          python3 -I builder/compact_proto.py --whole m/f4.db m/f4w.db | tail -2 | tee -a report.txt
+          echo "built $(stat -c %s m/f4.db) bytes, rewritten $(stat -c %s m/f4w.db) bytes" | tee -a report.txt
+          rm -f m/f4w.db
+          echo "=== 5. every lookup, both formats" | tee -a report.txt
+          perl verify/pack_equiv.pl dsc m/f3.db m/f4.db 2>&1 | tee -a report.txt
+
+      - name: Commit the report (also when a step failed)
+        if: always()
+        run: |
+          dump="${{ steps.plan.outputs.dump }}"
+          [ -f report.txt ] || echo "no report: a step before Check failed" > report.txt
+          mkdir -p verify-reports
+          cp report.txt "verify-reports/verify-$dump.txt"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add verify-reports
+          git commit -m "Verify report $dump"
+          git pull --rebase -q origin "$GITHUB_REF_NAME"
+          git push origin "HEAD:$GITHUB_REF_NAME"

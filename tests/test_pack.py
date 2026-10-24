@@ -49,20 +49,45 @@ class Built(unittest.TestCase):
 class TestBuild(Built):
     def test_format_and_version(self):
         meta = dict(self.q(self.v1, 'SELECT key, value FROM meta'))
-        self.assertEqual(meta['format'], '3')
+        self.assertEqual(meta['format'], '4')
         self.assertEqual(meta['dump'], '20260101-000000')
         self.assertEqual(meta['dump_timestamp'], '2026-01-01 00:00:00.000000+00')
 
     def test_format_flag(self):
         out = subprocess.run([sys.executable, '-I', os.path.join(BUILDER, 'build_pack.py'), '--format'],
                              capture_output=True, text=True, check=True).stdout.strip()
-        self.assertEqual(out, '3')
+        self.assertEqual(out, '4')
 
     def test_tables(self):
         names = {r[0] for r in self.q(self.v1, "SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertIn('namekey_probe', names)
         cols = [r[1] for r in self.q(self.v1, 'PRAGMA table_info(artist_rel)')]
         self.assertEqual(cols, ['a', 'b', 'kind', 'epon', 'skey'])
+        # Format 4: the lookups are tables, artist_info is on the artist row.
+        self.assertTrue({'artist_gk', 'rgx_gk', 'artist_rel_b'} <= names)
+        self.assertNotIn('artist_info', names)
+        self.assertEqual([r[1] for r in self.q(self.v1, 'PRAGMA table_info(artist)')],
+                         ['id', 'gid', 'name', 'ngroups', 'comment', 'type', 'country'])
+
+    def test_no_secondary_index(self):
+        # A device compacts by copying each table in one statement; an index
+        # would have to be rebuilt in one go. Not even sqlite_stat1 (no ANALYZE).
+        objs = self.q(self.v1, "SELECT type, name FROM sqlite_master WHERE type != 'table' OR name LIKE 'sqlite%'")
+        self.assertEqual(objs, [])
+
+    def test_lookup_tables_mirror_their_tables(self):
+        for v in (self.v1, self.v2):
+            self.assertEqual(sorted(self.q(v, 'SELECT gk, id FROM artist_gk')),
+                             sorted(self.q(v, 'SELECT substr(gid, 1, 8), id FROM artist')))
+            self.assertEqual(sorted(self.q(v, 'SELECT gk, id FROM rgx_gk')),
+                             sorted(self.q(v, 'SELECT substr(gid, 1, 8), id FROM rgx')))
+            self.assertEqual(sorted(self.q(v, 'SELECT b, a, kind FROM artist_rel_b')),
+                             sorted(self.q(v, 'SELECT b, a, kind FROM artist_rel')))
+            self.assertGreater(len(self.q(v, 'SELECT 1 FROM artist_rel_b')), 0)
+
+    def test_artist_info_on_the_artist_row(self):
+        rows = self.q(self.v1, 'SELECT count(*) FROM artist WHERE comment IS NOT NULL OR type IS NOT NULL OR country IS NOT NULL')
+        self.assertGreater(rows[0][0], 0)
 
     def test_relation_order_is_musicbrainz(self):
         # Bjork's bands: Kukl (1985-1988, ended), The Sugarcubes (1990), The
@@ -126,7 +151,7 @@ class TestDelta(Built):
         self.assertEqual([r[1] for r in self.q(out, 'PRAGMA table_info(del_artist_alias)')],
                          ['artist', 'name', 'locale'])
         self.assertEqual(dict(self.q(out, 'SELECT key, value FROM delta_meta')),
-                         {'format': '3', 'from': '20260101-000000', 'to': '20260102-000000'})
+                         {'format': '4', 'from': '20260101-000000', 'to': '20260102-000000'})
 
     def test_tampered_delta_fails_its_proof(self):
         out = os.path.join(self.tmp, 'd12t.db')

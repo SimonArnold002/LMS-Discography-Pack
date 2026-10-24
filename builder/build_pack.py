@@ -33,6 +33,17 @@ FORMAT 3 (2026-10-16, for updates by delta):
   * namekey_probe: names and the keys this build's _norm gave them. The device
     computes the same keys with ITS _norm and turns the same-name list off if
     they differ (a plugin and a pack built with different matcher code).
+FORMAT 4 (2026-10-24, so a device can compact its pack after a delta; the
+plugin's ledger, A2 `THE PACK GROWS IN PLACE`): the same rows with NO secondary
+index, because a delta applied in place splits B-tree pages and only a copy of
+each table in ONE statement packs them full again, which an index (rebuilt in
+one go) would block:
+  * artist_gk / rgx_gk (gk = the gid's first 8 bytes, id) replace the unique
+    gid indexes; the plugin looks up by prefix and checks the full gid;
+  * the table artist_rel_b (b, a, kind) replaces the index on artist_rel(b);
+  * artist_info's comment, type and country are columns of artist.
+  * no ANALYZE: a fresh pack and a device's rewritten one plan alike.
+Measured on the 2026-10-21 dump: 378.2 MB against format 3's 415.3 MB.
 Keys are MusicBrainz's own integer row ids (stable dump to dump).
 
 Tables read from mbdump/: artist, artist_alias, artist_credit_name,
@@ -47,7 +58,7 @@ Usage: python3 -I build_pack.py <dir holding mbdump/> <out.db> --dsc <LMS-Discog
 """
 import argparse, os, re, sqlite3, struct, subprocess, sys, time, uuid
 
-FORMAT = 3
+FORMAT = 4
 
 # Names whose keys the device recomputes to prove its matcher folds names as
 # this build's did: accents, stroke and ligature letters, marks inside and
@@ -141,7 +152,9 @@ SPECIAL_GIDS = {'89ad4ac3-39f7-470e-963a-56509c546377', '125ec42a-7229-4250-afc5
 
 SCHEMA = '''
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
-CREATE TABLE artist (id INTEGER PRIMARY KEY, gid BLOB NOT NULL, name TEXT NOT NULL, ngroups INTEGER NOT NULL);
+CREATE TABLE artist (id INTEGER PRIMARY KEY, gid BLOB NOT NULL, name TEXT NOT NULL, ngroups INTEGER NOT NULL,
+                     comment TEXT, type INTEGER, country TEXT);
+CREATE TABLE artist_gk (gk BLOB NOT NULL, id INTEGER NOT NULL, PRIMARY KEY (gk, id)) WITHOUT ROWID;
 CREATE TABLE artist_alias (artist INTEGER NOT NULL, name TEXT NOT NULL, locale TEXT NOT NULL, prim INTEGER NOT NULL,
                            PRIMARY KEY (artist, name, locale)) WITHOUT ROWID;
 CREATE TABLE artist_url (artist INTEGER NOT NULL, svc INTEGER NOT NULL, ext INTEGER NOT NULL,
@@ -149,24 +162,21 @@ CREATE TABLE artist_url (artist INTEGER NOT NULL, svc INTEGER NOT NULL, ext INTE
 CREATE TABLE artist_rel (a INTEGER NOT NULL, b INTEGER NOT NULL, kind INTEGER NOT NULL,
                          epon INTEGER NOT NULL, skey BLOB NOT NULL,
                          PRIMARY KEY (a, b, kind)) WITHOUT ROWID;
+CREATE TABLE artist_rel_b (b INTEGER NOT NULL, a INTEGER NOT NULL, kind INTEGER NOT NULL,
+                           PRIMARY KEY (b, a, kind)) WITHOUT ROWID;
 CREATE TABLE artist_redirect (gid BLOB PRIMARY KEY, artist INTEGER NOT NULL) WITHOUT ROWID;
 CREATE TABLE rgx (id INTEGER PRIMARY KEY, gid BLOB NOT NULL, boot INTEGER NOT NULL, discogs INTEGER);
+CREATE TABLE rgx_gk (gk BLOB NOT NULL, id INTEGER NOT NULL, PRIMARY KEY (gk, id)) WITHOUT ROWID;
 CREATE TABLE rg_alias (rg INTEGER NOT NULL, name TEXT NOT NULL, PRIMARY KEY (rg, name)) WITHOUT ROWID;
 CREATE TABLE rg_edition (rg INTEGER NOT NULL, title TEXT NOT NULL, PRIMARY KEY (rg, title)) WITHOUT ROWID;
 CREATE TABLE rg_url (rg INTEGER NOT NULL, kind INTEGER NOT NULL, url TEXT NOT NULL,
                      PRIMARY KEY (rg, kind)) WITHOUT ROWID;
 CREATE TABLE artist_name (key TEXT NOT NULL, artist INTEGER NOT NULL, PRIMARY KEY (key, artist)) WITHOUT ROWID;
-CREATE TABLE artist_info (artist INTEGER PRIMARY KEY, comment TEXT, type INTEGER, country TEXT);
 CREATE TABLE artist_type (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
 CREATE TABLE release (gid BLOB PRIMARY KEY, rg BLOB NOT NULL, type INTEGER, sec INTEGER) WITHOUT ROWID;
 CREATE TABLE rg_type (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
 CREATE TABLE rg_sec (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
 CREATE TABLE namekey_probe (name TEXT PRIMARY KEY, key TEXT NOT NULL) WITHOUT ROWID;
-'''
-INDEXES = '''
-CREATE UNIQUE INDEX artist_gid ON artist(gid);
-CREATE UNIQUE INDEX rgx_gid ON rgx(gid);
-CREATE INDEX artist_rel_b ON artist_rel(b);
 '''
 
 
@@ -341,7 +351,7 @@ def build(SRC, OUT, dsc, dump_id):
         linked.add(b)
     keep = linked | set(a_alias) | set(a_svc) | set(ngroups)
     iso = {int(r[0]): r[1] for r in rows('iso_3166_1', 2)}
-    art, ainfo = {}, []
+    art, ainfo = {}, {}
     for r in rows('artist', 19):
         i = int(r[0])
         if i in keep:
@@ -349,7 +359,7 @@ def build(SRC, OUT, dsc, dump_id):
             cmt, typ = r[13] or None, int(r[10]) if r[10] else None
             cty = iso.get(int(r[11])) if r[11] else None
             if cmt or typ or cty:
-                ainfo.append((i, cmt, typ, cty))
+                ainfo[i] = (cmt, typ, cty)
     redir = [(r[0], int(r[1])) for r in rows('artist_gid_redirect', 3) if int(r[1]) in art]
     log(f'artist rows {len(art)}, redirects {len(redir)}')
 
@@ -363,24 +373,29 @@ def build(SRC, OUT, dsc, dump_id):
     c = sqlite3.connect(OUT)
     c.executescript('PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA page_size=4096;' + SCHEMA)
     c.execute('BEGIN')
-    c.executemany('INSERT INTO artist VALUES (?,?,?,?)',
-                  ((i, gid(g), n, ngroups.get(i, 0)) for i, (g, n) in sorted(art.items())))
+    c.executemany('INSERT INTO artist VALUES (?,?,?,?,?,?,?)',
+                  ((i, gid(g), n, ngroups.get(i, 0)) + ainfo.get(i, (None, None, None))
+                   for i, (g, n) in sorted(art.items())))
+    c.executemany('INSERT INTO artist_gk VALUES (?,?)',
+                  sorted((gid(g)[:8], i) for i, (g, n) in art.items()))
     c.executemany('INSERT INTO artist_alias VALUES (?,?,?,?)',
                   ((a, n, loc, p) for a in sorted(a_alias) if a in art for (n, loc), p in a_alias[a].items()))
     c.executemany('INSERT INTO artist_url VALUES (?,?,?)',
                   ((a, k, e) for a in sorted(a_svc) if a in art for k, e in a_svc[a]))
     c.executemany('INSERT INTO artist_rel VALUES (?,?,?,?,?)',
                   ((a, b, k, ep, sk) for (a, b, k), (ep, sk) in sorted(rel.items()) if a in art and b in art))
+    c.executemany('INSERT INTO artist_rel_b VALUES (?,?,?)',
+                  sorted((b, a, k) for (a, b, k) in rel if a in art and b in art))
     c.executemany('INSERT INTO artist_redirect VALUES (?,?)', ((gid(g), a) for g, a in redir))
     groups = sorted(set(rg_alias) | set(eds) | set(rg_links) | set(rg_dg) | boot)
     c.executemany('INSERT INTO rgx VALUES (?,?,?,?)',
                   ((g, gid(rg_meta[g][0]), 1 if g in boot else 0, rg_dg.get(g)) for g in groups))
+    c.executemany('INSERT INTO rgx_gk VALUES (?,?)', sorted((gid(rg_meta[g][0])[:8], g) for g in groups))
     c.executemany('INSERT INTO rg_alias VALUES (?,?)', ((g, n) for g in sorted(rg_alias) for n in rg_alias[g]))
     c.executemany('INSERT INTO rg_edition VALUES (?,?)', ((g, t) for g in sorted(eds) for t in eds[g]))
     c.executemany('INSERT INTO rg_url VALUES (?,?,?)',
                   ((g, k, u) for g in sorted(rg_links) for k, u in sorted(rg_links[g].items())))
     c.executemany('INSERT INTO artist_name VALUES (?,?)', sorted(aname))
-    c.executemany('INSERT INTO artist_info VALUES (?,?,?,?)', sorted(ainfo))
     c.executemany('INSERT INTO artist_type VALUES (?,?)', [(int(r[0]), r[1]) for r in rows('artist_type', 6)])
     relmap.sort()
     c.executemany('INSERT INTO release VALUES (?,?,?,?)',
@@ -397,8 +412,7 @@ def build(SRC, OUT, dsc, dump_id):
         meta.append(('dump', dump_id))
     c.executemany('INSERT INTO meta VALUES (?,?)', meta)
     c.execute('COMMIT')
-    log('rows written; indexing')
-    c.executescript(INDEXES + 'ANALYZE;')
+    log('rows written; compacting')
     c.execute('VACUUM')
     ok = c.execute('PRAGMA integrity_check').fetchone()[0]
     if ok != 'ok':

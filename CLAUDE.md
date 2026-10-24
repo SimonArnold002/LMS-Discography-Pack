@@ -34,6 +34,23 @@ what `make_delta.apply()` does.
   build here logs it). A credit that only spells the group's artists
   differently is left out.
 
+## Format 4 (2026-10-24, on the `format4` branch until verify.yml passes)
+- Why: a delta applied in place splits B-tree pages (31 MB from one 0.57 MB
+  delta, measured); a copy of each table in ONE statement packs them full
+  again (a copy in steps does not: ~10 points less full), and that needs a
+  file with no secondary index. So: `artist_gk` / `rgx_gk` (first 8 gid bytes,
+  id) replace the unique gid indexes (the plugin checks the full gid);
+  `artist_rel_b` is a table; `artist_info` is folded into `artist`; no ANALYZE.
+  378.2 MB against format 3's 415.3 MB (2026-10-21 dump).
+- `verify.yml` (format4 branch, or by hand) proves it before it ships: the same
+  dump in both formats through the plugin's own Pack.pm, every lookup, every id
+  (`verify/pack_equiv.pl`), plus the rows (`verify/compare_tables.py`) and the
+  table-by-table rewrite's size. `verify/dsc/Discography/Pack.pm` is a COPY of
+  LMS-Discography's working Pack.pm under test; refresh it when Pack.pm changes.
+- Pushing format 4 to main makes the scheduled build publish manifest-v4 and
+  stop updating manifest-v3: only once verify passes and the plugin side
+  (PackUpdate FORMAT 4 + the rewrite) is built.
+
 ## The device side (LMS-Discography, PackUpdate.pm)
 - Reads manifest-v3.json, takes the deltas when the chain from its pack's dump
   is complete and together under half the whole pack, else the whole pack;
