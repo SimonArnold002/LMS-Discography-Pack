@@ -1,5 +1,5 @@
-=== format 4 verify, dump 20261021-002201, 2026-10-24T10:49:01Z
-plugin Pack.pm 83cceec2f9e1, Sources.pm 116920a51a03 (dev)
+=== format 4 verify, dump 20261021-002201, 2026-10-24T11:39:51Z
+format 3 read by Pack-0.56.96.pm bdc724326865; format 4 by Pack.pm 1107bac0df25; Sources.pm 116920a51a03 (dev)
 format 3 published: 415346688 bytes; format 4 built: 378150912 bytes
 === 3. the builder's rows against the format-3 pack converted
   artist            2,072,162 rows
@@ -23,23 +23,23 @@ format 3 published: 415346688 bytes; format 4 built: 378150912 bytes
   rgx_gk              746,733 rows
 tables: SAME
 === 4. rewritten table by table (a device after a delta)
-m/f4w.db: 378,150,912 bytes in 1.7 s; the longest table: artist 457 ms
+m/f4w.db: 378,150,912 bytes in 2.3 s; the longest table: artist 596 ms
 the same rows VACUUMed: 378,150,912 bytes (+0 for the table-by-table copy)
 built 378150912 bytes, rewritten 378150912 bytes
 === 5. every lookup, both formats
 ids: 2182341 artists (with redirects and misses), 1855456 name keys, 11146 group calls, 15683 release calls
-pass f3.db: format 3, dump 20261021-002201, 415346688 bytes, name keys ok
-  artistRead       2182341 calls   2162341 answered    257.9 s
-  collaboration    2182341 calls   2162341 answered    104.2 s
-  sameName         1855456 calls   1835456 answered     85.3 s
-  groups             11146 calls     11146 answered     15.8 s
-  releases           15683 calls     15683 answered     14.6 s
-pass f4.db: format 4, dump 20261021-002201, 378150912 bytes, name keys ok
-  artistRead       2182341 calls   2162341 answered    273.6 s
-  collaboration    2182341 calls   2162341 answered    108.7 s
-  sameName         1855456 calls   1835456 answered     73.6 s
-  groups             11146 calls     11146 answered     18.1 s
-  releases           15683 calls     15683 answered     14.7 s
+pass m/f3.db with dsc3/Discography/Pack.pm (c670a6e0b9ab): format 3, dump 20261021-002201, 415346688 bytes, name keys ok
+  artistRead       2182341 calls   2162341 answered    411.8 s
+  collaboration    2182341 calls   2162341 answered    159.3 s
+  sameName         1855456 calls   1835456 answered    152.1 s
+  groups             11146 calls     11146 answered     20.6 s
+  releases           15683 calls     15683 answered     20.4 s
+pass m/f4.db with dsc/Discography/Pack.pm (97f4cda49b33): format 4, dump 20261021-002201, 378150912 bytes, name keys ok
+  artistRead       2182341 calls   2162341 answered    265.9 s
+  collaboration    2182341 calls   2162341 answered    106.0 s
+  sameName         1855456 calls   1835456 answered     73.5 s
+  groups             11146 calls     11146 answered     21.3 s
+  releases           15683 calls     15683 answered     19.8 s
 
 answers:
   artistRead       2182341 calls, 0 differ
@@ -49,10 +49,10 @@ answers:
   releases           15683 calls, 0 differ
 
 speed (ms per call: median / 95% / 99% / slowest; format 3 -> format 4):
-  artistRead      0.093 /  0.121 /  0.154 /    3.38  ->   0.099 /  0.129 /  0.171 /    3.80   total  257.9 s ->  273.6 s (+6%)
-  collaboration   0.042 /  0.052 /  0.059 /    0.57  ->   0.044 /  0.054 /  0.059 /    0.54   total  104.2 s ->  108.7 s (+4%)
-  sameName        0.033 /  0.043 /  0.067 /    1.40  ->   0.028 /  0.035 /  0.051 /    1.14   total   85.3 s ->   73.6 s (-14%)
-  groups          0.790 /  0.861 /  1.133 /    2.41  ->   0.982 /  1.072 /  1.650 /    3.16   total   15.8 s ->   18.1 s (+15%)
-  releases        0.532 /  0.591 /  0.629 /    1.63  ->   0.534 /  0.570 /  0.641 /    1.52   total   14.6 s ->   14.7 s (+1%)
+  artistRead      0.147 /  0.190 /  0.226 /    4.85  ->   0.086 /  0.117 /  0.147 /    4.81   total  411.8 s ->  265.9 s (-35%)
+  collaboration   0.063 /  0.079 /  0.085 /    0.34  ->   0.041 /  0.052 /  0.056 /    0.56   total  159.3 s ->  106.0 s (-33%)
+  sameName        0.059 /  0.077 /  0.098 /    1.69  ->   0.023 /  0.032 /  0.048 /    1.41   total  152.1 s ->   73.5 s (-52%)
+  groups          0.965 /  1.029 /  1.078 /    1.95  ->   1.043 /  1.108 /  1.153 /    1.96   total   20.6 s ->   21.3 s (+3%)
+  releases        0.729 /  0.757 /  0.786 /    1.14  ->   0.697 /  0.722 /  0.763 /    1.49   total   20.4 s ->   19.8 s (-3%)
 
 SAME: every answer of format 4 equals format 3's
