@@ -1,0 +1,129 @@
+# How much bigger the pack would be with Discography's candidate tables (Simon,
+# 2026-10-31: "I would need to see how much larger the pack would be with this
+# extra data, cant be a guess needs to be hard evidence via a build"). Builds
+# today's pack (format 3, builder/build_pack.py unchanged) from a MusicBrainz
+# dump, then a copy of it per candidate (builder/measure_extra.py), each
+# compacted and gzipped as a release is, and commits the sizes to
+# reports/extra-<dump>.txt on this branch. Publishes nothing: no release, no
+# manifest, main untouched.
+#
+# The dump: the one the published pack in manifest-v3.json was built from,
+# while MusicBrainz still serves it (so this run's own build of today's pack is
+# checked against the published file), else the newest. Runs when this file,
+# the script or its test is pushed to the measure-extra branch, or by hand
+# (Actions > Measure extra tables > Run workflow, branch measure-extra).
+name: Measure extra tables
+
+on:
+  push:
+    branches: [measure-extra]
+    paths:
+      - .github/workflows/measure-extra.yml
+      - builder/measure_extra.py
+      - tests/test_measure_extra.py
+  workflow_dispatch:
+    inputs:
+      dump:
+        description: 'fullexport dump name (blank = the published pack''s, else the newest)'
+        default: ''
+
+permissions:
+  contents: write
+
+# Its own group: a scheduled Build pack is never held up by it.
+concurrency:
+  group: measure-extra
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      DSC_REF: ${{ vars.DSC_REF || 'dev' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Which dump
+        id: plan
+        run: |
+          dump="${{ inputs.dump }}"
+          pub=$(python3 -I -c 'import json; print(json.load(open("manifest-v3.json"))["pack"]["dump"])' 2>/dev/null || true)
+          if [ -z "$dump" ] && [ -n "$pub" ] && curl -sfI -o /dev/null \
+               -A 'LMS-Discography-Pack/1 (https://github.com/SimonArnold002/LMS-Discography-Pack)' \
+               "https://data.metabrainz.org/pub/musicbrainz/data/fullexport/$pub/MD5SUMS"; then
+            dump="$pub"
+          fi
+          [ -n "$dump" ] || dump=$(python3 -I builder/fetch_dump.py latest)
+          echo "dump=$dump" >> "$GITHUB_OUTPUT"
+          echo "dump $dump (published pack: ${pub:-none})"
+
+      - name: LMS-Discography's Sources.pm (the name keys of today's pack)
+        uses: actions/checkout@v4
+        with:
+          repository: SimonArnold002/LMS-Discography
+          ref: ${{ env.DSC_REF }}
+          path: dsc
+          sparse-checkout: Discography/Sources.pm
+          sparse-checkout-cone-mode: false
+
+      - name: Tests (the made-up dump; nothing is measured if they fail)
+        run: DSC_DIR="$PWD/dsc" python3 -m unittest discover -s tests -v
+
+      - name: Disk space and tools
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get update -qq && sudo apt-get install -y -qq lbzip2
+          df -h . && free -g
+
+      - name: Fetch the dump (the pack's tables and the candidates'; streamed, MD5 checked)
+        run: |
+          python3 -I builder/measure_extra.py fetch "${{ steps.plan.outputs.dump }}" work
+          du -sh work/mbdump work/caa 2>/dev/null || true
+          df -h .
+
+      - name: Build today's pack (format 3, unchanged)
+        run: |
+          mkdir -p out
+          python3 -I builder/build_pack.py work out/base.db --dsc "$PWD/dsc" --dump "${{ steps.plan.outputs.dump }}"
+
+      - name: What the candidates hold, from the dump
+        run: |
+          python3 -I builder/measure_extra.py facts work out/facts.db | tee facts.txt
+          rm -rf work
+          df -h .
+
+      - name: Build and measure each candidate
+        run: |
+          python3 -I builder/measure_extra.py measure out/base.db out/facts.db out manifest-v3.json | tee measure.txt
+          df -h .
+
+      - name: The report
+        if: always()
+        run: |
+          {
+            echo "Measure extra tables, run ${{ github.run_id }}, commit ${{ github.sha }}, dump ${{ steps.plan.outputs.dump }}"
+            sed -n '/^=== What/,$p' measure.txt 2>/dev/null || echo 'NO MEASUREMENT: a step before it failed (see the run log)'
+            echo; echo '--- the facts step'; cat facts.txt 2>/dev/null || echo '(none)'
+            echo; echo '--- the measure step, as it ran'; sed -n '1,/^=== What/p' measure.txt 2>/dev/null || echo '(none)'
+          } > report.txt
+          cat report.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: extra-measure
+          path: report.txt
+
+      - name: Commit the report (also when a step failed, so the partial report is readable)
+        if: always()
+        run: |
+          dump="${{ steps.plan.outputs.dump }}"
+          mkdir -p reports
+          cp report.txt "reports/extra-${dump:-unknown}.txt"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add reports
+          git commit -m "Measure extra tables ${dump:-unknown}"
+          git pull --rebase -q origin measure-extra
+          git push origin HEAD:measure-extra
