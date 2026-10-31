@@ -1,0 +1,128 @@
+Measure extra tables, run 41243365512, commit 5f9f00f5569d4857fbf430ed64da1dde99d1b67b, dump 20261028-002228
+=== What Discography's candidate tables add to the pack: dump 20261028-002228
+today's pack: builder/build_pack.py format 3, unchanged, built in this run from the same dump; every variant is a copy of it plus the candidate, VACUUMed, gzip -9 -n.
+published pack-20261028-002228 (manifest-v3.json): 416,309,248 bytes on disk, 269,204,526 gzipped; this run's: 416,309,248 and 269,204,526
+
+variant                                        on disk     gzipped    added on disk    added gzipped
+today's pack                                  416.3 MB    269.2 MB
+group lists (item 3)                          745.5 MB    481.4 MB   +329.2 MB  79%   +212.2 MB  79%
+group lists + the whole release map           943.4 MB    647.9 MB   +527.1 MB 127%   +378.7 MB 141%
+barcode map (layer A)                         511.4 MB    329.8 MB    +95.1 MB  23%    +60.6 MB  23%
+service album ids (layer A)                   517.0 MB    332.3 MB   +100.6 MB  24%    +63.0 MB  23%
+layer A whole (barcodes + album ids)          582.7 MB    369.7 MB   +166.4 MB  40%   +100.5 MB  37%
+track count + length ranges (layer C)         550.6 MB    369.6 MB   +134.3 MB  32%   +100.4 MB  37%
+all of them                                 1,194.9 MB    808.7 MB   +778.6 MB 187%   +539.5 MB 200%
+
+bytes exactly:
+  base                 416,309,248 on disk     269,204,526 gzipped
+  lists                745,484,288 on disk     481,400,016 gzipped
+  lists+relmap         943,378,432 on disk     647,867,248 gzipped
+  barcode              511,361,024 on disk     329,828,755 gzipped
+  links                516,956,160 on disk     332,251,253 gzipped
+  barcode+links        582,680,576 on disk     369,711,395 gzipped
+  range                550,633,472 on disk     369,598,030 gzipped
+  all                1,194,946,560 on disk     808,718,889 gzipped
+
+the tables each variant adds or grows (on disk, from dbstat, and rows):
+  group lists (item 3):
+    artist_rg        61.7 MB 5,156,185 rows
+    credit           24.4 MB 553,603 rows
+    rg              243.0 MB 4,306,197 rows
+  group lists + the whole release map:
+    artist_rg        61.7 MB 5,156,185 rows
+    credit           24.4 MB 553,603 rows
+    rg              243.0 MB 4,306,197 rows
+    release         241.3 MB (was 43.4 MB) 5,885,015 rows (was 1,054,349)
+  barcode map (layer A):
+    barcode          39.7 MB 2,633,179 rows
+    rg_gid           55.4 MB 2,144,859 rows
+  service album ids (layer A):
+    rg_gid           33.5 MB 1,287,881 rows
+    svc_album        67.1 MB 2,910,153 rows
+  layer A whole (barcodes + album ids):
+    barcode          39.7 MB 2,633,179 rows
+    rg_gid           59.6 MB 2,306,232 rows
+    svc_album        67.1 MB 2,910,153 rows
+  track count + length ranges (layer C):
+    rg_range        134.3 MB 4,428,135 rows
+  all of them:
+    artist_rg        61.7 MB 5,156,185 rows
+    barcode          39.7 MB 2,633,179 rows
+    credit           24.4 MB 553,867 rows
+    rg              253.4 MB 4,460,860 rows
+    rg_range        134.3 MB 4,428,135 rows
+    svc_album        67.1 MB 2,910,153 rows
+    release         241.3 MB (was 43.4 MB) 5,885,015 rows (was 1,054,349)
+  self-check: every variant is today's pack plus exactly its own tables
+
+what the dump holds for them:
+  releases                                                                          5,885,015
+  releases with a barcode of 8-14 digits                                            2,767,249
+  releases with another barcode (letters, too short or long), left out                  1,107
+  cover flags: from the Cover Art Archive tables
+  tracks                                                                           58,673,215
+    data tracks, left out                                                              18,885
+    audio tracks with no length                                                     5,551,368
+  groups with a track range (an official release with a whole tracklist)            4,428,135
+    of them with a length range too                                                 4,003,637
+  release links to a service album page                                             3,058,605
+    Qobuz                                                                             334,973
+    Deezer                                                                            979,141
+    TIDAL                                                                             543,535
+    Spotify                                                                         1,200,956
+  release groups                                                                    4,605,673
+    in an artist list (credited to an artist other than a special-purpose one)      4,306,197
+    with a front cover                                                              3,187,632
+    with a credit stored (not one artist under their own name)                        752,742
+  artist-group pairs (every credit position, special-purpose artists left out)      5,156,185
+  artists with a list                                                               1,130,415
+  printed credits the groups use (one artist under their own name left out)           554,307
+
+--- the facts step
+[    7.1s] largest ids: release 6,143,671, release group 5,109,913, medium 6,650,872
+[   35.4s] releases 5,885,015; barcodes kept 2,767,249, left out 1,107
+[   52.2s] first-release dates done
+[   67.1s] cover flags: from the Cover Art Archive tables
+[  131.0s] tracks 58,673,215 (data 18,885, no length 5,551,368)
+[  141.1s] track ranges done
+[  181.0s] service album links 3,058,605
+[  257.1s] facts done: 784,965,632 bytes
+  releases                                                                          5,885,015
+  releases with a barcode of 8-14 digits                                            2,767,249
+  releases with another barcode (letters, too short or long), left out                  1,107
+  cover flags: from the Cover Art Archive tables
+  tracks                                                                           58,673,215
+    data tracks, left out                                                              18,885
+    audio tracks with no length                                                     5,551,368
+  groups with a track range (an official release with a whole tracklist)            4,428,135
+    of them with a length range too                                                 4,003,637
+  release links to a service album page                                             3,058,605
+    Qobuz                                                                             334,973
+    Deezer                                                                            979,141
+    TIDAL                                                                             543,535
+    Spotify                                                                         1,200,956
+  release groups                                                                    4,605,673
+    in an artist list (credited to an artist other than a special-purpose one)      4,306,197
+    with a front cover                                                              3,187,632
+    with a credit stored (not one artist under their own name)                        752,742
+  artist-group pairs (every credit position, special-purpose artists left out)      5,156,185
+  artists with a list                                                               1,130,415
+  printed credits the groups use (one artist under their own name left out)           554,307
+
+--- the measure step, as it ran
+[    0.4s] building lists
+[   14.3s]   lists: 745,484,288 bytes
+[   14.3s] building lists+relmap
+[   61.5s]   lists+relmap: 943,378,432 bytes
+[   61.5s] building barcode
+[   78.8s]   barcode: 511,361,024 bytes
+[   79.8s] building links
+[   98.8s]   links: 516,956,160 bytes
+[  154.0s] building barcode+links
+[  184.0s]   barcode+links: 582,680,576 bytes
+[  185.0s] building range
+[  200.8s]   range: 550,633,472 bytes
+[  201.8s] building all
+[  274.6s]   all: 1,194,946,560 bytes
+
+=== What Discography's candidate tables add to the pack: dump 20261028-002228
