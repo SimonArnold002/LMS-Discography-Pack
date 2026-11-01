@@ -54,3 +54,81 @@ what `make_delta.apply()` does.
 - The builder lives here, not in LMS-Discography; the run fetches only DSC's
   Sources.pm (ref: repository variable DSC_REF, else `dev`; DSC's `main` holds
   docs only until its first release).
+
+## The hosted pack test (2026-11-01, branch `hosted-test`, local, not pushed)
+- What: the hosted pack for Cloudflare D1 (behind a Worker), built ONCE with its
+  content fixed (Simon: "We really would not be rebuilding the DB more than
+  once"), in TODAY's table layout. **Content (Simon, 2026-11-01, plan §10-§11):
+  today's pack (format 3) + every artist's group list (rg, credit, artist_rg) +
+  the whole release map + barcodes + streaming album ids + the alias / old-name
+  keys (alias_name).** Out: layer C (the track match stays on ListenBrainz), a
+  typo index (closest names stay MusicBrainz's). Rule: anything Discography reads
+  from ListenBrainz or the community API today stays there; the group lists are
+  for the untagged library artist's lookup (C2) only, not the page's first list.
+  The bucketed "keyed" layout and files (Static Assets, R2) were dropped the same
+  day. Plan, decisions, measured sizes: LMS-Discography `docs/hosted-pack-plan.md`.
+  Branch made from `origin/measure-extra` (bcb51b4), so this file is that
+  branch's (no format 4 section; format 4 lives on `format4`).
+- "See if we lose anything ... if we do we go back to MB for the problematic ones"
+  (Simon): three checks, each reported per lookup with examples:
+  1. today's lookups through the hosted reader against Pack.pm on today's pack,
+     exactly (`releases`: every Pack.pm entry, the whole map's others counted);
+  2. the new lookups (artistList, aliasName, the whole map, barcode, svcAlbum)
+     against `truth`: answers built from the dump's facts by other SQL;
+  3. `mbcheck`: a sample asked of MusicBrainz: the alias search (names that are
+     no act's own name) and the C2 title search, against the file. Asked of
+     Simon's local mirror (`http://plex:5000/ws/2/`, Simon 2026-11-01: "use the
+     local MB mirror not public MB please to expediate tests on the mb
+     comparisions"), so it runs ON THE MAC with the run's artifact (the runner
+     cannot reach the mirror; the workflow asks MusicBrainz nothing but the
+     dumps). musicbrainz.org is still taken, MB_GAP apart; the builder's UA, no
+     e-mail. Every difference is then looked up by id (`artist/<mbid>`, the
+     database) and given its reason (`WHY`): merged since, an edit since, an act
+     the file does not hold, a longer name matched, the search missing a name the
+     act has. **The mirror's search index is stale, its database current**
+     (2026-11-01: the index stops near artist row id 3,335,227, 2.84% of the
+     pack's acts newer; none of the 20 newest found by `arid:`); the lookups are
+     what keep its differences honest. Refuses a Sources.pm whose name keys are
+     not the file's (namekey_probe).
+- Files: `builder/hosted.py` (aliases, narrow, delta, grow, measure, dumps,
+  queries, truth, pages, compare, mbcheck, run, report), `worker/reader.mjs`
+  (the Worker's reader, Pack.pm's answer shapes, plus artistList and aliasName),
+  `worker/node-d1.mjs` (D1's interface over node:sqlite; rows_read a LOWER bound
+  of D1's rows scanned), `worker/answers.mjs`, `worker/pages.mjs` (one cold page;
+  its groups from the dump's facts, as the first list gives them),
+  `verify/hosted_pack_answers.pl` (Pack.pm on today's pack), `tests/test_hosted.py`,
+  `.github/workflows/hosted-test.yml` (input `every`).
+- `verify/plugin/Pack.pm` is a COPY of LMS-Discography's working Pack.pm
+  (0.56.107, md5 3515d996...; Pack.pm is not on any pushed DSC branch yet). The
+  workflow pairs it with DSC_REF's Sources.pm (the name keys the published packs
+  use) in `dscp/`; refresh the copy by hand when Pack.pm changes.
+- The delta: gzipped JSON lines, per table the dels then the puts, BLOBs as
+  base64; applied per row as an upsert or a delete, IN PLACE, no VACUUM (as the
+  Worker will); proven old + delta == new before it counts.
+- The workflow publishes nothing and never touches Cloudflare. It commits
+  `reports/hosted-<dump B>.txt` here and keeps hosted-B.db, pages.json,
+  queries.jsonl, truth.jsonl, aliases-B.tsv and the Sources.pm md5 14 days as an
+  artifact for the local test (`hosted.py` docstring: THE LOCAL TEST, which
+  includes mbcheck on the mirror).
+- First mbcheck result (2026-11-01), the alias half only, on the PUBLISHED
+  pack-20261028 + its alias list (built locally from the built pack, no dump):
+  2,000 names, 37 s; 1,905 same first act, 6 lower, 70 none found (all the act
+  having the name in the database: the stale index), 16 a longer name matched,
+  2 merged since, 1 an empty act the pack never keeps. LMS-Discography
+  `docs/hosted-pack-plan.md` §11, end.
+- Tests: 15 in test_hosted.py (54 with the others), all passing locally
+  2026-11-01, with the working Sources.pm and with the runner's pair;
+  MusicBrainz stubbed (nothing in the suite asks it), its stub answering
+  lookups by id too. The reader test pairs DSC's Sources.pm with
+  verify/plugin/Pack.pm itself (`plugin_dir`, as the hosted workflow does), so the
+  Tests workflow, whose DSC checkout holds Sources.pm only, runs it too; skipped
+  without Node 22.5+ or perl's DBD::SQLite. The made-up
+  dump gained aliases for the checks: "Kukl Group" on both Kukls (an alias naming
+  two acts) and Björk's "Kukl" (an alias that is another act's own name).
+  Mutants (session scratchpad mut_hosted3.py, the unmutated suite checked first):
+  24 of 26 caught; both survivors equivalent (the narrow reader's alias sort,
+  which SQLite's key order gives; truth's `inlist` filter, which f_artist_rg
+  already implies). The local-test commands give SAME on the made-up dump.
+  The mirror change and the reasons (mut_hosted4-7.py): 18 more planted, all
+  caught after two tests were added (report counts with distinct numbers; the
+  title reasons shown).

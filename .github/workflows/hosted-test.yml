@@ -1,0 +1,176 @@
+# THE HOSTED PACK: today's pack + every artist's group list + the whole release
+# map + barcodes + streaming album ids + the alias / old-name keys, in today's
+# table layout (LMS-Discography docs/hosted-pack-plan.md, sections 10 and 11;
+# Simon, 2026-11-01: "lets look to add everything from the last list and we test
+# it all to see if we lose anything before mving to cloudflare", "if we do we go
+# back to MB for the problematic ones"). From the two dumps MusicBrainz serves (A,
+# the older, and B), builds today's pack and the candidate tables of each
+# (measure_extra.py), then builder/hosted.py `run`:
+#   - the file from dump B: rows a first load writes, size on disk and gzipped,
+#     what each extra adds;
+#   - the delta A -> B, proven (A + delta == B), applied IN PLACE as the Worker
+#     will: rows written, growth;
+#   - one cold page for named artists: rows read;
+#   - every lookup Discography makes today, through Pack.pm on today's pack (B),
+#     against the hosted reader (worker/reader.mjs); the new lookups against
+#     answers built from the dump's own facts.
+# Commits reports/hosted-<B>.txt to this branch and keeps dump B's file, its
+# aliases.tsv, pages.json, queries.jsonl and truth.jsonl as an artifact for the
+# local test, which also asks MusicBrainz itself: a sample of its alias search and
+# its title search (the two lookups the extras would replace), of Simon's local
+# mirror, which this runner cannot reach (Simon, 2026-11-01: "use the local MB
+# mirror not public MB"; builder/hosted.py, THE LOCAL TEST). This run asks
+# MusicBrainz nothing but the dumps. Publishes nothing: no release, no manifest,
+# main untouched, Cloudflare not touched.
+name: Hosted pack test
+
+on:
+  push:
+    branches: [hosted-test]
+    paths:
+      - .github/workflows/hosted-test.yml
+      - builder/hosted.py
+      - worker/**
+      - verify/hosted_pack_answers.pl
+      - tests/test_hosted.py
+  workflow_dispatch:
+    inputs:
+      every:
+        description: 'answers checked for every n-th id (1 = all)'
+        default: '50'
+
+permissions:
+  contents: write
+
+# Its own group: a scheduled Build pack is never held up by it.
+concurrency:
+  group: hosted-test
+  cancel-in-progress: false
+
+jobs:
+  hosted:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      DSC_REF: ${{ vars.DSC_REF || 'dev' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: LMS-Discography's Sources.pm (the name keys of today's pack)
+        uses: actions/checkout@v4
+        with:
+          repository: SimonArnold002/LMS-Discography
+          ref: ${{ env.DSC_REF }}
+          path: dsc
+          sparse-checkout: Discography/Sources.pm
+          sparse-checkout-cone-mode: false
+
+      - name: The plugin code the check runs (Sources.pm from DSC_REF, Pack.pm the copy in verify/plugin)
+        # Pack.pm is not on LMS-Discography's pushed branches yet; verify/plugin/Pack.pm is a COPY of
+        # its working Pack.pm (the one Discography 0.56.107 runs), refreshed by hand when it changes.
+        run: |
+          mkdir -p dscp/Discography
+          cp dsc/Discography/Sources.pm dscp/Discography/
+          cp verify/plugin/Pack.pm dscp/Discography/
+          md5sum dscp/Discography/*.pm
+
+      - name: Disk space and tools
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get update -qq && sudo apt-get install -y -qq lbzip2 libdbi-perl libdbd-sqlite3-perl
+          perl -MDBD::SQLite -e 'print "DBD::SQLite $DBD::SQLite::VERSION, SQLite $DBD::SQLite::sqlite_version\n"'
+          node -e "require('node:sqlite'); console.log('node', process.version, 'node:sqlite ok')"
+          df -h . && free -g && nproc
+
+      - name: Tests (the made-up dump; nothing is measured if they fail)
+        run: DSC_DIR="$PWD/dscp" python3 -m unittest discover -s tests -v
+
+      - name: Which dumps
+        id: plan
+        run: |
+          read a b <<< "$(python3 -I builder/hosted.py dumps)"
+          echo "a=$a" >> "$GITHUB_OUTPUT"
+          echo "b=$b" >> "$GITHUB_OUTPUT"
+          echo "dump A $a, dump B $b"
+
+      - name: Dump A - fetch, today's pack, the candidate tables, the alias keys
+        run: |
+          mkdir -p out
+          d="${{ steps.plan.outputs.a }}"
+          python3 -I builder/measure_extra.py fetch "$d" work
+          python3 -I builder/build_pack.py work out/base-A.db --dsc "$PWD/dsc" --dump "$d"
+          python3 -I builder/measure_extra.py facts work out/facts-A.db > facts-A.txt
+          python3 -I builder/hosted.py aliases out/base-A.db "$PWD/dsc" out/aliases-A.tsv
+          rm -rf work
+          df -h .
+
+      - name: Dump B - the same
+        run: |
+          d="${{ steps.plan.outputs.b }}"
+          python3 -I builder/measure_extra.py fetch "$d" work
+          python3 -I builder/build_pack.py work out/base-B.db --dsc "$PWD/dsc" --dump "$d"
+          python3 -I builder/measure_extra.py facts work out/facts-B.db > facts-B.txt
+          python3 -I builder/hosted.py aliases out/base-B.db "$PWD/dsc" out/aliases-B.tsv
+          rm -rf work
+          df -h .
+
+      - name: The hosted file, its delta, its answers
+        run: |
+          python3 -I builder/hosted.py run out/base-A.db out/facts-A.db out/aliases-A.tsv \
+            out/base-B.db out/facts-B.db out/aliases-B.tsv "$PWD/dscp" out/run \
+            "${{ inputs.every || '50' }}" > hosted.txt
+          cat hosted.txt
+          df -h .
+
+      - name: The report
+        if: always()
+        run: |
+          {
+            echo "Hosted pack test, run ${{ github.run_id }}, commit ${{ github.sha }}, dumps ${{ steps.plan.outputs.a }} -> ${{ steps.plan.outputs.b }}"
+            cat hosted.txt 2>/dev/null || echo 'NO MEASUREMENT: a step before it failed (see the run log)'
+            echo; echo '--- what dump B holds for the candidate tables (measure_extra.py facts)'; cat facts-B.txt 2>/dev/null || echo '(none)'
+          } > report.txt
+          cat report.txt
+
+      - name: The file of dump B for the local test
+        if: success()
+        run: |
+          mkdir -p keep
+          gzip -6 -c out/run/hosted-B.db > keep/hosted-B.db.gz
+          gzip -6 -c out/run/queries.jsonl > keep/queries.jsonl.gz
+          gzip -6 -c out/run/truth.jsonl > keep/truth.jsonl.gz
+          gzip -6 -c out/aliases-B.tsv > keep/aliases-B.tsv.gz
+          md5sum dscp/Discography/Sources.pm > keep/sources-pm.md5
+          cp out/run/results.json out/run/pages.json keep/
+          ls -l keep
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: hosted-packs-${{ steps.plan.outputs.b }}
+          path: keep/
+          retention-days: 14
+          compression-level: 0
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hosted-report
+          path: report.txt
+
+      - name: Commit the report (also when a step failed, so the partial report is readable)
+        if: always()
+        run: |
+          b="${{ steps.plan.outputs.b }}"
+          mkdir -p reports
+          cp report.txt "reports/hosted-${b:-unknown}.txt"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add reports
+          git commit -m "Hosted pack test ${b:-unknown}"
+          git pull --rebase -q origin hosted-test
+          git push origin HEAD:hosted-test
