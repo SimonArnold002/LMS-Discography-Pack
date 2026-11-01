@@ -1,0 +1,178 @@
+Hosted pack test, run 41350885542, commit 0bde0f8e6a9e8e2bf4b871cb19ad8a4837d16918, dumps 20261028-002228 -> 20261101-125824
+=== The hosted pack: today's pack + group lists + whole release map + barcodes + album ids + alias keys, dump 20261028-002228 -> 20261101-125824
+Plan: LMS-Discography docs/hosted-pack-plan.md (sections 10, 11). Measured, nothing estimated; the shares are the measured counts against D1's Workers Paid allowance
+(50,000,000 rows written, 25,000,000,000 rows read, 5 GB a month; two dumps a week = 8.7 deltas a month).
+
+--- 1. the one load into D1 (dump B, freshly built): rows written and size
+today's pack       11,514,294 rows +  3,443,845 index entries =   14,958,139 written (29.92% of 50M); 417.0 MB on disk (8.34% of 5 GB), 269.6 MB gzipped
+the hosted file    32,585,086 rows +  3,443,845 index entries =   36,028,931 written (72.06% of 50M); 1,074.4 MB on disk (21.49% of 5 GB), 715.7 MB gzipped
+what each extra adds (rows, on disk):
+   alias / old-name keys    +    471,581 rows  +11.6 MB
+   group lists              + 10,193,558 rows  +340.4 MB
+   barcodes                 +  2,639,637 rows  +39.8 MB
+   whole release map        +  4,840,658 rows  +198.3 MB
+   album ids                +  2,925,356 rows  +67.5 MB
+
+--- 2. one delta (dump A -> dump B) applied IN PLACE, as the Worker will (upsert / delete per row, no VACUUM)
+rows written: 75,760 new + 9,984 replaced + 2,446 deleted + 10,350 index entries (upserts only: D1 counts none for a delete) = 98,540; x 8.7 a month = 1.71% of 50M
+per table (puts, dels): alias_name 1,149/67, artist 8,246/85, artist_alias 1,318/92, artist_info 3,090/77, artist_name 2,992/140, artist_redirect 95/0, artist_rel 708/59, artist_rg 11,975/423, artist_url 3,397/73, barcode 6,607/149, credit 1,562/251, meta 4/0, release 12,893/182, rg 13,276/211, rg_alias 142/7, rg_edition 771/257, rg_url 719/42, rgx 1,396/130, svc_album 15,404/201
+delta 1.9 MB gzipped; the grown file 1,162.4 MB against 1,074.4 MB fresh (+88.0 MB), 0 free pages
+on D1, which gives whole free pages back at once but never compacts a part-empty one (measured): about 1,162.4 MB (+88.0 MB on the fresh file)
+(growth is ONE delta from a freshly built file; later deltas are measured by later runs)
+
+--- 1k. THE KEYED LAYOUT, the same content as bucketed documents (one row per bucket, no index): the load
+buckets a kind    rows written   of 50M     on disk     gzipped  of 5 GB    build
+           4,096        32,779    0.07%  1,020.7 MB    966.6 MB   20.41%     336s
+          16,384       131,083    0.26%  1,252.1 MB    989.6 MB   25.04%     300s
+          65,536       524,243    1.05%  1,913.9 MB  1,031.5 MB   38.28%     328s
+--- 2k. the keyed delta applied in place (a changed bucket is one upsert; no index entries)
+buckets a kind        new  replaced  deleted  = written  x/month of 50M   delta gz      grown      on D1      fresh
+           4,096        0    27,261        0     27,261           0.47%   879.6 MB 1,022.2 MB 1,022.2 MB 1,020.7 MB
+          16,384        0    53,851        0     53,851           0.93%   476.9 MB 1,254.2 MB 1,254.2 MB 1,252.1 MB
+          65,536        0    67,457        0     67,457           1.17%   170.5 MB 1,916.8 MB 1,916.8 MB 1,913.9 MB
+--- 4k. keyed values per kind (bytes): median / 99% / largest; D1 refuses a row over 2,000,000 bytes
+           4,096  art 34,461/40,206/58,407  lst 63,534/132,472/469,562  grp 7,005/8,467/9,487  nam 23,419/27,279/34,409  ali 5,303/6,487/7,066  rel 56,485/59,953/61,759  bar 17,910/19,673/21,109  svc 24,324/26,465/27,856
+          16,384  art 8,880/11,906/31,073  lst 15,419/40,625/426,868  grp 1,871/2,610/4,372  nam 6,056/8,060/17,103  ali 1,388/2,052/2,654  rel 14,178/16,028/17,478  bar 4,481/5,370/6,836  svc 6,080/7,190/7,895
+          65,536  art 2,314/3,845/23,994  lst 3,601/15,533/416,733  grp 537/954/2,851  nam 1,584/2,713/11,951  ali 380/750/1,512  rel 3,528/4,429/5,387  bar 1,116/1,562/3,521  svc 1,533/2,105/2,588
+
+--- 3. one cold artist page: rows read (rows returned, a LOWER bound: real D1 counted 1-2 per row returned, an IN list 2 per key, a join 3-4 for 2 rows), per layout
+   page                                                         narrow    keyed 4,096   keyed 16,384   keyed 65,536
+   Bruce Springsteen (70248960, 2147 groups)                     3,241          1,703          2,024          2,127
+   Johann Sebastian Bach (24f1766e, 6216 groups)                 3,877          3,196          5,204          5,928
+   Bob Dylan (72c536dc, 1208 groups)                             1,490          1,054          1,177          1,204
+   Madness (5f58803e, 111 groups)                                  217            112            114            114
+   Mädness (22346ee7, 22 groups)                                    37             25             25             25
+   Madness (745156cf, 2 groups)                                     15              5              5              5
+   Miles Davis (561d854a, 799 groups)                              838            730            786            799
+   Radiohead (a74b1b7f, 587 groups)                                796            558            579            587
+   Jandek (61a21fb6, 136 groups)                                   126            138            139            139
+   Centro-Matic (ad76c38e, 29 groups)                               46             32             32             32
+   queries, largest page                                           120             35             56             63
+   bytes read, largest page                                    117,905     22,539,040      9,850,568      3,360,227
+   ms, slowest page (Node, this runner)                           38.2         1248.4          979.6         1430.6
+
+--- 3b. the page as ONE request (LMS-Discography docs/hosted-pack-plan.md §12): the Worker's whole answer, built from the file
+   the answer: the artist read, the same-name list, every collaboration's vetting and the extras of every group on the file's list for him; "+ owned" adds up to 100 of his release ids; "+ eponymous bands" each band marked eponymous (read + its groups' extras); "+ every band" each forward member-of-band link, an upper bound of the fold. decode/gunzip: Perl v5.40.1 JSON::XS 4.04, on this runner, slowest of 5
+   page                                     variant                 listed  extras  bands      answer     gzipped    decode   gunzip
+   Bruce Springsteen (70248960, 2147 groups the page                 2,147   1,905      0    270.5 kB     64.8 kB    0.75ms   0.57ms
+   Bruce Springsteen (70248960, 2147 groups + owned releases         2,147   1,905      0    282.7 kB     68.8 kB    0.74ms   0.58ms
+   Bruce Springsteen (70248960, 2147 groups + eponymous bands        2,147   1,905      0    270.5 kB     64.8 kB    0.68ms   0.55ms
+   Bruce Springsteen (70248960, 2147 groups + every band (bound)     2,147   1,905     15    311.5 kB     72.2 kB    1.33ms   0.88ms
+   Johann Sebastian Bach (24f1766e, 6216 gr the page                 6,216   1,514      0    261.1 kB     70.8 kB    0.67ms   0.62ms
+   Johann Sebastian Bach (24f1766e, 6216 gr + owned releases         6,216   1,514      0    272.8 kB     75.3 kB    0.73ms   0.66ms
+   Johann Sebastian Bach (24f1766e, 6216 gr + eponymous bands        6,216   1,514      0    261.1 kB     70.8 kB    0.70ms   0.77ms
+   Johann Sebastian Bach (24f1766e, 6216 gr + every band (bound)     6,216   1,514      0    261.1 kB     70.8 kB    0.69ms   0.62ms
+   Bob Dylan (72c536dc, 1208 groups)        the page                 1,208   1,039      0    129.4 kB     30.4 kB    0.35ms   0.27ms
+   Bob Dylan (72c536dc, 1208 groups)        + owned releases         1,208   1,039      0    141.4 kB     34.6 kB    0.38ms   0.30ms
+   Bob Dylan (72c536dc, 1208 groups)        + eponymous bands        1,208   1,039      0    129.4 kB     30.4 kB    0.36ms   0.26ms
+   Bob Dylan (72c536dc, 1208 groups)        + every band (bound)     1,208   1,039      2    136.1 kB     32.1 kB    0.39ms   0.28ms
+   Madness (5f58803e, 111 groups)           the page                   111      69      0     16.9 kB      4.4 kB    0.05ms   0.04ms
+   Madness (5f58803e, 111 groups)           + owned releases           111      69      0     28.9 kB      7.5 kB    0.08ms   0.07ms
+   Madness (5f58803e, 111 groups)           + eponymous bands          111      69      0     16.9 kB      4.4 kB    0.04ms   0.03ms
+   Madness (5f58803e, 111 groups)           + every band (bound)       111      69      0     16.9 kB      4.4 kB    0.05ms   0.05ms
+   Mädness (22346ee7, 22 groups)            the page                    22       9      0      3.6 kB      1.2 kB    0.01ms   0.07ms
+   Mädness (22346ee7, 22 groups)            + owned releases            22       9      0      7.2 kB      2.4 kB    0.03ms   0.02ms
+   Mädness (22346ee7, 22 groups)            + eponymous bands           22       9      0      3.6 kB      1.3 kB    0.01ms   0.01ms
+   Mädness (22346ee7, 22 groups)            + every band (bound)        22       9      0      3.6 kB      1.3 kB    0.01ms   0.02ms
+   Madness (745156cf, 2 groups)             the page                     2       0      0      1.9 kB      0.8 kB    0.00ms   0.01ms
+   Madness (745156cf, 2 groups)             + owned releases             2       0      0      2.1 kB      0.9 kB    0.01ms   0.01ms
+   Madness (745156cf, 2 groups)             + eponymous bands            2       0      0      1.9 kB      0.8 kB    0.01ms   0.02ms
+   Madness (745156cf, 2 groups)             + every band (bound)         2       0      0      1.9 kB      0.8 kB    0.01ms   0.07ms
+   Miles Davis (561d854a, 799 groups)       the page                   799     285      0     55.9 kB     14.0 kB    0.14ms   0.13ms
+   Miles Davis (561d854a, 799 groups)       + owned releases           799     285      0     68.0 kB     18.0 kB    0.17ms   0.16ms
+   Miles Davis (561d854a, 799 groups)       + eponymous bands          799     285      9     84.0 kB     19.1 kB    0.32ms   0.22ms
+   Miles Davis (561d854a, 799 groups)       + every band (bound)       799     285     11     87.6 kB     19.7 kB    0.23ms   0.18ms
+   Radiohead (a74b1b7f, 587 groups)         the page                   587     548      0     68.2 kB     16.8 kB    0.19ms   0.15ms
+   Radiohead (a74b1b7f, 587 groups)         + owned releases           587     548      0     80.1 kB     20.5 kB    0.39ms   0.18ms
+   Radiohead (a74b1b7f, 587 groups)         + eponymous bands          587     548      0     68.2 kB     16.8 kB    0.19ms   0.14ms
+   Radiohead (a74b1b7f, 587 groups)         + every band (bound)       587     548      0     68.2 kB     16.8 kB    0.20ms   0.15ms
+   Jandek (61a21fb6, 136 groups)            the page                   136      57      0      9.6 kB      2.3 kB    0.02ms   0.02ms
+   Jandek (61a21fb6, 136 groups)            + owned releases           136      57      0     21.4 kB      5.8 kB    0.06ms   0.05ms
+   Jandek (61a21fb6, 136 groups)            + eponymous bands          136      57      0      9.6 kB      2.3 kB    0.02ms   0.02ms
+   Jandek (61a21fb6, 136 groups)            + every band (bound)       136      57      0      9.6 kB      2.3 kB    0.03ms   0.03ms
+   Centro-Matic (ad76c38e, 29 groups)       the page                    29      20      0      3.9 kB      1.2 kB    0.01ms   0.01ms
+   Centro-Matic (ad76c38e, 29 groups)       + owned releases            29      20      0      7.7 kB      2.3 kB    0.03ms   0.02ms
+   Centro-Matic (ad76c38e, 29 groups)       + eponymous bands           29      20      0      3.9 kB      1.2 kB    0.01ms   0.01ms
+   Centro-Matic (ad76c38e, 29 groups)       + every band (bound)        29      20      0      3.9 kB      1.2 kB    0.01ms   0.01ms
+   every layout's answer is the same size, to the byte (its content: the suite's TestMoments)
+   every answer's extras are what groups(<his list>) gives, in every layout
+   D1 queries / rows read (a lower bound, as section 3) / ms to build here, per layout, the page and the widest variant:
+   page                                     variant                                  narrow              keyed 4,096             keyed 16,384             keyed 65,536
+   Bruce Springsteen (70248960, 2147 groups the page                   18     3,240    18.8      6         6    86.8      6         6    45.2      6         6    56.7
+   Bruce Springsteen (70248960, 2147 groups + every band (bound)      183     3,540    14.2     51        51   170.7     51        51    30.2     51        51    86.1
+   Johann Sebastian Bach (24f1766e, 6216 gr the page                   12     3,876    19.9      4         4   174.2      4         4    10.8      4         4    17.8
+   Johann Sebastian Bach (24f1766e, 6216 gr + every band (bound)       12     3,876    20.2      4         4    16.7      4         4     9.0      4         4    12.8
+   Bob Dylan (72c536dc, 1208 groups)        the page                   18     1,489     8.2      6         6    23.5      6         6     5.4      6         6     5.7
+   Bob Dylan (72c536dc, 1208 groups)        + every band (bound)       40     1,571     6.9     12        12   163.3     12        12     8.0     12        12    13.5
+   Madness (5f58803e, 111 groups)           the page                   12       216     1.2      4         4   582.1      4         4     3.5      4         4     3.9
+   Madness (5f58803e, 111 groups)           + every band (bound)       12       216     0.9      4         4     3.7      4         4     1.6      4         4     1.8
+   Mädness (22346ee7, 22 groups)            the page                   12        36     0.4      4         4   548.5      4         4     3.7      4         4     5.6
+   Mädness (22346ee7, 22 groups)            + every band (bound)       12        36     0.2      4         4     3.3      4         4     1.4      4         4     1.2
+   Madness (745156cf, 2 groups)             the page                   12        14     0.2      4         4   300.3      4         4     1.4      4         4     5.1
+   Madness (745156cf, 2 groups)             + every band (bound)       12        14     0.1      4         4     9.1      4         4     1.4      4         4     1.2
+   Miles Davis (561d854a, 799 groups)       the page                   15       837     3.8      5         5   428.6      5         5     4.4      5         5     4.3
+   Miles Davis (561d854a, 799 groups)       + every band (bound)      136     1,175     6.5     38        38    68.4     38        38    29.2     38        38    18.3
+   Radiohead (a74b1b7f, 587 groups)         the page                   12       795     3.6      4         4    10.4      4         4     4.2      4         4     2.9
+   Radiohead (a74b1b7f, 587 groups)         + every band (bound)       12       795     3.2      4         4     7.3      4         4     2.2      4         4     3.5
+   Jandek (61a21fb6, 136 groups)            the page                   12       125     0.9      4         4     9.9      4         4     2.2      4         4     6.0
+   Jandek (61a21fb6, 136 groups)            + every band (bound)       12       125     0.6      4         4     5.5      4         4     3.6      4         4     1.2
+   Centro-Matic (ad76c38e, 29 groups)       the page                   12        45     0.4      4         4    15.7      4         4   128.8      4         4     2.6
+   Centro-Matic (ad76c38e, 29 groups)       + every band (bound)       12        45     0.2      4         4    11.0      4         4     1.4      4         4     1.3
+
+--- 4. per table (dump B): rows / on disk
+alias_name 471,581/11.6 MB, artist 2,079,554/137.1 MB, artist_alias 548,235/14.9 MB, artist_info 1,831,477/41.9 MB, artist_name 2,078,736/45.1 MB, artist_redirect 90,435/2.3 MB, artist_rel 614,885/27.8 MB, artist_rg 5,167,737/61.9 MB, artist_type 6/0.0 MB, artist_url 1,594,881/22.6 MB, barcode 2,639,637/39.8 MB, credit 555,178/24.5 MB, meta 8/0.0 MB, namekey_probe 32/0.0 MB, release 5,897,156/241.8 MB, rg 4,470,643/254.0 MB, rg_alias 69,063/2.6 MB, rg_edition 243,618/9.3 MB, rg_sec 12/0.0 MB, rg_type 5/0.0 MB, rg_url 557,445/29.3 MB, rgx 749,406/40.6 MB, svc_album 2,925,356/67.5 MB
+
+--- 5. the answers: today's lookups against Pack.pm on today's pack; the new ones against answers built from the dump's facts
+queries 382,013; Pack.pm md5 3515d996b5e9805f959a16130a7da227 on today's pack (format 3, dump 20261101-125824): 382013 queries, 180825 answered, the rest are lookups it does not have
+  artistRead        44,287 calls,    43,419 answered, 0 differ
+  collaboration     44,287 calls,    43,419 answered, 0 differ
+  groupCount        44,287 calls,    43,419 answered, 0 differ
+  artistList        44,287 calls,    23,983 answered, 0 differ
+  sameName          45,979 calls,    37,719 answered, 0 differ
+  aliasName         45,979 calls,     9,943 answered, 0 differ
+  groups               224 calls,       224 answered, 0 differ
+  releases           1,761 calls,     1,761 answered, 0 differ, 96,818 releases more than today's map
+  barcode           52,488 calls,    52,468 answered, 0 differ
+  svcAlbum          58,434 calls,    58,430 answered, 0 differ
+  files: narrow, keyed 12, keyed 14, keyed 16
+  SAME: every file answers as Pack.pm does on today's pack, and every new lookup as the dump's facts give
+
+--- 6. against MusicBrainz itself: not on the runner. The sample is asked of the local mirror on the Mac (hosted.py mbcheck, THE LOCAL TEST), with this run's file
+
+--- 7. not measured by this run
+- D1 counting and space were measured separately on real D1 (2026-11-01, a scratch database, 3,224 rows written): applied above. Not measured: loading the whole file into D1 (its time, statement and batch limits).
+- Growth over more than one delta: the next runs, one per dump.
+- The Worker's own time and CPU: sections 3 and 3b time Node on this runner, against a local file (no D1 round trips; 3b's query count is what adds them). Decode times are this runner's CPU, not a user's server.
+
+run 2026-11-01T22:12:37Z -> 2026-11-01T22:39:39Z
+
+--- what dump B holds for the candidate tables (measure_extra.py facts)
+[    4.0s] largest ids: release 6,156,002, release group 5,120,086, medium 6,663,999
+[   21.3s] releases 5,897,156; barcodes kept 2,773,984, left out 1,105
+[   30.1s] first-release dates done
+[   39.1s] cover flags: from the Cover Art Archive tables
+[   75.5s] tracks 58,760,222 (data 18,897, no length 5,557,170)
+[   81.2s] track ranges done
+[  103.8s] service album links 3,076,351
+[  151.5s] facts done: 786,862,080 bytes
+  releases                                                                          5,897,156
+  releases with a barcode of 8-14 digits                                            2,773,984
+  releases with another barcode (letters, too short or long), left out                  1,105
+  cover flags: from the Cover Art Archive tables
+  tracks                                                                           58,760,222
+    data tracks, left out                                                              18,897
+    audio tracks with no length                                                     5,557,170
+  groups with a track range (an official release with a whole tracklist)            4,437,753
+    of them with a length range too                                                 4,012,737
+  release links to a service album page                                             3,076,351
+    Qobuz                                                                             340,471
+    Deezer                                                                            983,180
+    TIDAL                                                                             547,198
+    Spotify                                                                         1,205,502
+  release groups                                                                    4,615,620
+    in an artist list (credited to an artist other than a special-purpose one)      4,315,768
+    with a front cover                                                              3,193,928
+    with a credit stored (not one artist under their own name)                        754,523
+  artist-group pairs (every credit position, special-purpose artists left out)      5,167,737
+  artists with a list                                                               1,132,315
+  printed credits the groups use (one artist under their own name left out)           555,622
