@@ -1,0 +1,89 @@
+Hosted pack test, run 41315180394, commit 785a718a9271b7cdfee9d4aa48d38a62eb114732, dumps 20261024-102842 -> 20261028-002228
+=== The hosted pack: today's pack + group lists + whole release map + barcodes + album ids + alias keys, dump 20261024-102842 -> 20261028-002228
+Plan: LMS-Discography docs/hosted-pack-plan.md (sections 10, 11). Measured, nothing estimated; the shares are the measured counts against D1's Workers Paid allowance
+(50,000,000 rows written, 25,000,000,000 rows read, 5 GB a month; two dumps a week = 8.7 deltas a month).
+
+--- 1. the one load into D1 (dump B, freshly built): rows written and size
+today's pack       11,496,361 rows +  3,439,241 index entries =   14,935,602 written (29.87% of 50M); 416.3 MB on disk (8.33% of 5 GB), 269.2 MB gzipped
+the hosted file    32,511,772 rows +  3,439,241 index entries =   35,951,013 written (71.90% of 50M); 1,072.2 MB on disk (21.44% of 5 GB), 714.2 MB gzipped
+what each extra adds (rows, on disk):
+   alias / old-name keys    +    470,499 rows  +11.5 MB
+   group lists              + 10,170,912 rows  +339.6 MB
+   barcodes                 +  2,633,179 rows  +39.7 MB
+   whole release map        +  4,830,666 rows  +197.9 MB
+   album ids                +  2,910,153 rows  +67.1 MB
+
+--- 2. one delta (dump A -> dump B) applied IN PLACE, as the Worker will (upsert / delete per row, no VACUUM)
+rows written: 61,656 new + 8,158 replaced + 1,799 deleted + 9,067 index entries (an upper bound) = 80,680; x 8.7 a month = 1.40% of 50M
+per table (puts, dels): alias_name 717/33, artist 7,119/69, artist_alias 835/59, artist_info 2,630/62, artist_name 2,675/96, artist_redirect 71/0, artist_rel 689/49, artist_rg 9,276/423, artist_url 3,317/49, barcode 5,327/87, credit 1,344/146, meta 4/0, release 9,933/101, rg 10,132/163, rg_alias 104/15, rg_edition 621/202, rg_url 478/31, rgx 1,022/119, svc_album 13,520/95
+delta 1.5 MB gzipped; the grown file 1,150.6 MB against 1,072.2 MB fresh (+78.5 MB), 0 free pages
+(growth is ONE delta from a freshly built file; later deltas are measured by later runs)
+
+--- 3. one cold artist page: rows read (rows returned, a LOWER bound of D1's rows scanned) and queries
+   Bruce Springsteen (70248960, 2146 groups)                        3,240 rows     97 queries     45.3 ms (Node)
+   Johann Sebastian Bach (24f1766e, 6206 groups)                    3,871 rows    120 queries     61.6 ms (Node)
+   Bob Dylan (72c536dc, 1203 groups)                                1,485 rows     61 queries     19.0 ms (Node)
+   Madness (5f58803e, 111 groups)                                     217 rows     14 queries      2.8 ms (Node)
+   Mädness (22346ee7, 22 groups)                                       37 rows     13 queries      1.0 ms (Node)
+   Madness (745156cf, 2 groups)                                        15 rows     10 queries      0.4 ms (Node)
+   Miles Davis (561d854a, 799 groups)                                 838 rows     29 queries      9.0 ms (Node)
+   Radiohead (a74b1b7f, 587 groups)                                   796 rows     33 queries     10.2 ms (Node)
+   Jandek (61a21fb6, 135 groups)                                      126 rows     14 queries      2.0 ms (Node)
+   Centro-Matic (ad76c38e, 29 groups)                                  46 rows     13 queries      0.9 ms (Node)
+
+--- 4. per table (dump B): rows / on disk
+alias_name 470,499/11.5 MB, artist 2,076,702/136.9 MB, artist_alias 547,043/14.9 MB, artist_info 1,829,082/41.9 MB, artist_name 2,075,884/45.0 MB, artist_redirect 90,340/2.3 MB, artist_rel 614,303/27.8 MB, artist_rg 5,156,185/61.7 MB, artist_type 6/0.0 MB, artist_url 1,591,557/22.5 MB, barcode 2,633,179/39.7 MB, credit 553,867/24.4 MB, meta 8/0.0 MB, namekey_probe 32/0.0 MB, release 5,885,015/241.3 MB, rg 4,460,860/253.4 MB, rg_alias 68,928/2.6 MB, rg_edition 243,104/9.3 MB, rg_sec 12/0.0 MB, rg_type 5/0.0 MB, rg_url 556,772/29.2 MB, rgx 748,236/40.5 MB, svc_album 2,910,153/67.1 MB
+
+--- 5. the answers: today's lookups against Pack.pm on today's pack; the new ones against answers built from the dump's facts
+queries 381,198; Pack.pm md5 3515d996b5e9805f959a16130a7da227 on today's pack (format 3, dump 20261028-002228): 381198 queries, 180572 answered, the rest are lookups it does not have
+  artistRead        44,227 calls,    43,360 answered, 0 differ
+  collaboration     44,227 calls,    43,360 answered, 0 differ
+  groupCount        44,227 calls,    43,360 answered, 0 differ
+  artistList        44,227 calls,    23,971 answered, 0 differ
+  sameName          45,910 calls,    37,677 answered, 0 differ
+  aliasName         45,910 calls,     9,961 answered, 0 differ
+  groups               224 calls,       224 answered, 0 differ
+  releases           1,757 calls,     1,757 answered, 0 differ, 96,728 releases more than today's map
+  barcode           52,359 calls,    52,339 answered, 0 differ
+  svcAlbum          58,130 calls,    58,126 answered, 0 differ
+  SAME: every answer as Pack.pm gives on today's pack, and every new one as the dump's facts give
+
+--- 6. against MusicBrainz itself: not on the runner. The sample is asked of the local mirror on the Mac (hosted.py mbcheck, THE LOCAL TEST), with this run's file
+
+--- 7. not measured by this run
+- D1 itself: how it counts an upsert of an existing key, an index entry, rows read by a join; whether it gives back the space of a deleted or replaced row (VACUUM is not documented). To be checked on real D1 with a few hundred rows before any big load.
+- Growth over more than one delta: the next runs, one per dump.
+- The Worker's own time and CPU: section 3 times Node on this runner.
+
+run 2026-11-01T15:26:00Z -> 2026-11-01T15:34:02Z
+
+--- what dump B holds for the candidate tables (measure_extra.py facts)
+[    7.0s] largest ids: release 6,143,671, release group 5,109,913, medium 6,650,872
+[   34.7s] releases 5,885,015; barcodes kept 2,767,249, left out 1,107
+[   51.2s] first-release dates done
+[   65.6s] cover flags: from the Cover Art Archive tables
+[  129.4s] tracks 58,673,215 (data 18,885, no length 5,551,368)
+[  139.4s] track ranges done
+[  179.3s] service album links 3,058,605
+[  255.1s] facts done: 784,965,632 bytes
+  releases                                                                          5,885,015
+  releases with a barcode of 8-14 digits                                            2,767,249
+  releases with another barcode (letters, too short or long), left out                  1,107
+  cover flags: from the Cover Art Archive tables
+  tracks                                                                           58,673,215
+    data tracks, left out                                                              18,885
+    audio tracks with no length                                                     5,551,368
+  groups with a track range (an official release with a whole tracklist)            4,428,135
+    of them with a length range too                                                 4,003,637
+  release links to a service album page                                             3,058,605
+    Qobuz                                                                             334,973
+    Deezer                                                                            979,141
+    TIDAL                                                                             543,535
+    Spotify                                                                         1,200,956
+  release groups                                                                    4,605,673
+    in an artist list (credited to an artist other than a special-purpose one)      4,306,197
+    with a front cover                                                              3,187,632
+    with a credit stored (not one artist under their own name)                        752,742
+  artist-group pairs (every credit position, special-purpose artists left out)      5,156,185
+  artists with a list                                                               1,130,415
+  printed credits the groups use (one artist under their own name left out)           554,307
