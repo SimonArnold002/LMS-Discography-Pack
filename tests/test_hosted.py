@@ -226,6 +226,21 @@ class TestFile(Hosted):
             self.assertEqual(m['tables'][t]['index_rows'], 0, t)
         self.assertEqual(m['layout'], 'narrow')
 
+    def test_index_entries_are_counted_for_upserts_only_as_d1_counts(self):
+        # Real D1, 2026-11-01: an upsert into a table with one index wrote 2 rows, new or
+        # existing, changed or not; a delete by key wrote 1.
+        src = self.f[1]['hosted']
+        c = sqlite3.connect(src)
+        (rel_cols, rel_pk), rel = hosted._tables(c)['artist_rel'], c.execute('SELECT * FROM artist_rel').fetchone()
+        art = c.execute('SELECT * FROM artist').fetchone()
+        c.close()
+        d = self.path('one.jsonl.gz')
+        with gzip.open(d, 'wt', encoding='utf-8') as f:
+            f.write(json.dumps({'t': 'artist_rel', 'd': [hosted._enc(rel[rel_cols.index(x)]) for x in rel_pk]}) + '\n')
+            f.write(json.dumps({'t': 'artist', 'p': [hosted._enc(v) for v in art]}) + '\n')
+        n = self.quiet(hosted.grow, src, d, self.path('one.db'))
+        self.assertEqual((n['deleted'], n['replaced'], n['new'], n['index'], n['rows_written']), (1, 1, 0, 1, 3))
+
     def test_a_delta_is_proven_and_grows_in_place(self):
         a, b = self.f[1]['hosted'], self.f[2]['hosted']
         d = self.path('d.jsonl.gz')
@@ -235,6 +250,8 @@ class TestFile(Hosted):
         self.assertEqual(ap['rows_written'], ap['new'] + ap['replaced'] + ap['deleted'] + ap['index'])
         self.assertGreater(ap['deleted'], 0)        # the artist url gone in version 2
         self.assertGreater(ap['index'], 0)
+        # D1 (measured): an index entry per index for every upsert, none for a delete.
+        self.assertEqual(ap['index'], sum(pt * hosted.NARROW_INDEXES.get(t, 0) for t, (pt, dl) in res['tables'].items()))
         for t in ('alias_name', 'artist_rg', 'rg'):  # Kukl's new alias; Björk's "Post"
             self.assertGreater(res['tables'][t][0], 0, t)
         # A damaged delta does not give the new file.
@@ -244,6 +261,91 @@ class TestFile(Hosted):
         with gzip.open(bad, 'wt', encoding='utf-8') as f:
             f.writelines(line for line in lines if '"t":"meta"' in line)
         g = self.path('g.db')
+        self.quiet(hosted.grow, a, bad, g)
+        self.assertNotEqual(hosted.same(g, b), '')
+
+
+class TestKeyed(Hosted):
+    """The keyed layout: the same records as the narrow file, bucketed."""
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.ent = {}
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            for v in (1, 2):
+                cls.ent[v] = os.path.join(cls.tmp, f'entries-{v}.db')
+                hosted.entries(cls.f[v]['hosted'], cls.ent[v])
+
+    def entry(self, v, kind, k):
+        r = q(self.ent[v], 'SELECT v FROM e WHERE kind = ? AND k = ?', kind, k)
+        return json.loads(r[0][0]) if r else None
+
+    def test_every_kind_one_entry_per_key(self):
+        h = self.f[2]['hosted']
+        self.assertEqual({k for (k,) in q(self.ent[2], 'SELECT DISTINCT kind FROM e')}, set(hosted.KINDS))
+        n = lambda kind: q(self.ent[2], 'SELECT count(*) FROM e WHERE kind = ?', kind)[0][0]
+        self.assertEqual(n('grp'), q(h, 'SELECT count(*) FROM rgx')[0][0])
+        self.assertEqual(n('rel'), q(h, 'SELECT count(*) FROM release')[0][0])           # the whole map
+        self.assertEqual(n('lst'), q(h, 'SELECT count(DISTINCT artist) FROM artist_rg')[0][0])
+        self.assertEqual(n('ali'), q(h, 'SELECT count(DISTINCT key) FROM alias_name')[0][0])
+        self.assertEqual(n('nam'), q(h, 'SELECT count(DISTINCT key) FROM artist_name')[0][0])
+        self.assertEqual(n('art'), q(h, 'SELECT count(*) FROM artist')[0][0] + q(h, 'SELECT count(*) FROM artist_redirect')[0][0])
+
+    def test_the_artist_and_redirect_documents(self):
+        bjork = self.entry(2, 'art', fixture.g(1).replace('-', ''))
+        self.assertEqual((len(bjork), bjork[0]), (8, 'Björk'))
+        self.assertTrue({'Björk Guðmundsdóttir', 'Kukl'} <= {a[0] for a in bjork[5]})
+        # A merged-away gid points at the current artist.
+        self.assertEqual(self.entry(2, 'art', fixture.g(99).replace('-', '')), fixture.g(1).replace('-', ''))
+
+    def test_the_list_and_alias_documents_are_the_narrow_answers(self):
+        h = self.f[2]['hosted']
+        for (a,) in q(h, 'SELECT DISTINCT a.gid FROM artist_rg ar JOIN artist a ON a.id = ar.artist'):
+            want = [[g.hex(), t, d, ty, sc, cv, cr] for g, t, d, ty, sc, cv, cr in q(
+                h, 'SELECT g.gid, g.title, g.date, g.type, g.sec, g.cover, c.name FROM artist_rg ar JOIN artist x '
+                   'ON x.id = ar.artist JOIN rg g ON g.id = ar.rg LEFT JOIN credit c ON c.id = g.credit '
+                   'WHERE x.gid = ? ORDER BY g.id', a)]
+            self.assertEqual(self.entry(2, 'lst', a.hex()), want)
+        self.assertEqual([x[1] for x in self.entry(2, 'lst', fixture.g(1).replace('-', ''))],
+                         ['Debut', 'Joint', 'Bootleg Live', 'Post', 'Untyped'])
+        # "Kukl Group": the Kukl with a group first.
+        self.assertEqual([x[0] for x in self.entry(2, 'ali', 'kukl group')],
+                         [fixture.g(9).replace('-', ''), fixture.g(3).replace('-', '')])
+
+    def test_keyed_files_are_deterministic_and_complete(self):
+        for bits in (0, 1, 3):
+            a, b = self.path(f'k{bits}a.db'), self.path(f'k{bits}b.db')
+            self.quiet(hosted.keyed, self.ent[1], self.f[1]['hosted'], bits, a)
+            self.quiet(hosted.keyed, self.ent[1], self.f[1]['hosted'], bits, b)
+            with open(a, 'rb') as x, open(b, 'rb') as y:
+                self.assertEqual(x.read(), y.read(), f'bits {bits}')
+            n_entries = q(self.ent[1], 'SELECT count(*) FROM e')[0][0]
+            rows = sum(q(a, f'SELECT count(*) FROM {k}')[0][0] for k in hosted.KINDS)
+            if bits == 0:
+                self.assertEqual(rows, n_entries)
+            else:
+                self.assertLessEqual(rows, len(hosted.KINDS) * 2 ** bits)
+                self.assertLess(rows, n_entries)          # buckets hold several records
+            m = hosted.measure(a)
+            self.assertEqual((m['layout'], m['bits'], m['index_rows']), ('keyed', str(bits), 0))
+
+    def test_a_keyed_delta_is_proven_and_writes_no_index_entries(self):
+        a, b = self.path('dka.db'), self.path('dkb.db')
+        self.quiet(hosted.keyed, self.ent[1], self.f[1]['hosted'], 2, a)
+        self.quiet(hosted.keyed, self.ent[2], self.f[2]['hosted'], 2, b)
+        d = self.path('d-keyed.jsonl.gz')
+        res = self.quiet(hosted.delta, a, b, d)
+        ap = res['apply']
+        self.assertGreater(ap['new'] + ap['replaced'], 0)
+        self.assertEqual(ap['index'], 0)
+        self.assertEqual(ap['rows_written'], ap['new'] + ap['replaced'] + ap['deleted'])
+        # A damaged delta does not give the new file.
+        with gzip.open(d, 'rt', encoding='utf-8') as f:
+            lines = f.readlines()
+        bad = self.path('bad-keyed.jsonl.gz')
+        with gzip.open(bad, 'wt', encoding='utf-8') as f:
+            f.writelines(line for line in lines if '"t":"meta"' in line)
+        g = self.path('g-keyed.db')
         self.quiet(hosted.grow, a, bad, g)
         self.assertNotEqual(hosted.same(g, b), '')
 
@@ -423,8 +525,10 @@ class TestReader(Hosted):
         f1, f2 = self.f[1], self.f[2]
         named = sorted({k for (k,) in q(f2['base'], 'SELECT key FROM artist_name WHERE artist IN (1, 2, 6)')})
         res = self.quiet(hosted.run, f1['base'], f1['facts'], f1['aliases'], f2['base'], f2['facts'], f2['aliases'],
-                         plugin_dir(self.tmp), work, every=1, named=named)
+                         plugin_dir(self.tmp), work, every=1, named=named, bits_list=[0, 1, 3], keep_bits=1, jobs=2)
         self.assertEqual(res['pages'], 3)
+        # Every file of the same content, held to the same answers.
+        self.assertEqual(res['labels'], ['narrow', 'keyed 0', 'keyed 1', 'keyed 3'])
         cmp = res['compare']
         self.assertEqual(set(cmp), {'artistRead', 'collaboration', 'groupCount', 'artistList', 'sameName',
                                     'aliasName', 'groups', 'releases', 'barcode', 'svcAlbum'})
@@ -437,10 +541,18 @@ class TestReader(Hosted):
         self.assertNotIn('mbcheck', res)                 # the runner cannot reach the mirror
         text = hosted.report(res)
         self.assertIn('against MusicBrainz itself: not on the runner', text)
-        self.assertIn('SAME: every answer as Pack.pm gives', text)
+        self.assertIn('SAME: every file answers as Pack.pm does', text)
         self.assertIn('whole release map', text)
+        self.assertIn('THE KEYED LAYOUT', text)
+        self.assertIn('one a record', text)
         self.assertTrue(os.path.exists(os.path.join(work, 'hosted-B.db')))
-        self.assertFalse(os.path.exists(os.path.join(work, 'hosted-A.db')))
+        self.assertTrue(os.path.exists(os.path.join(work, 'hosted-B-keyed1.db')))     # the kept bucket size
+        for gone in ('hosted-A.db', 'hosted-B-keyed3.db', 'hosted-A-keyed1.db', 'entries-A.db', 'entries-B.db'):
+            self.assertFalse(os.path.exists(os.path.join(work, gone)), gone)
+        for k in res['keyed']:
+            self.assertEqual(k['delta']['apply']['index'], 0)
+            self.assertTrue(all(pg['rows_read'] > 0 for pg in k['pages']['pages']), k['bits'])
+            self.assertEqual(k['over_cap'], [])
         for kept in ('pages.json', 'queries.jsonl', 'truth.jsonl', 'results.json'):
             self.assertTrue(os.path.exists(os.path.join(work, kept)), kept)
         # The page sample: the groups from the dump's facts, every one asked.
@@ -485,6 +597,12 @@ class TestReader(Hosted):
             f.writelines(json.dumps(r) + '\n' for r in lines['good'][:2] + [{'r': {'r1': {'rg': 'z', 'type': ''}}}]
                          + lines['good'][3:])
         self.assertEqual(hosted.compare(path['q'], path['p'], None, [('hosted', moved)])['releases']['differ'], 1)
+        # Two files with no truth: an unchecked lookup is still held file against file.
+        two = hosted.compare(path['q'], path['p'], None, [('narrow', path['good']), ('keyed', path['bad'])])
+        self.assertEqual((two['barcode']['unchecked'], two['barcode']['differ']), (1, 1))
+        self.assertEqual(two['barcode']['examples'][0]['differ'], ['keyed'])
+        same = hosted.compare(path['q'], path['p'], None, [('narrow', path['good']), ('keyed', path['good'])])
+        self.assertEqual(sum(st['differ'] for st in same.values()), 0)
 
 
 if __name__ == '__main__':

@@ -1,4 +1,4 @@
-// Answer a list of lookups from a hosted pack file, one JSON line
+// Answer a list of lookups from a hosted pack (either layout), one JSON line
 // per query, in order: {"r": answer}. builder/hosted.py `queries` writes the
 // list; `compare` holds these answers against Pack.pm's on today's pack.
 //

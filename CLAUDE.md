@@ -105,6 +105,20 @@ what `make_delta.apply()` does.
 - The delta: gzipped JSON lines, per table the dels then the puts, BLOBs as
   base64; applied per row as an upsert or a delete, IN PLACE, no VACUUM (as the
   Worker will); proven old + delta == new before it counts.
+- TWO LAYOUTS of the same content (Simon, 2026-11-01: one pack only, hosted or
+  download, so the hosted layout is free; the keyed one "we still should not
+  discount"): today's tables (narrow) and keyed (`entries` + `keyed`, built from
+  the narrow file: kinds art, lst, grp, nam, ali, rel, bar, svc; JSON entries,
+  bucketed by gid bits or SHA-1 of the key text, deflated, one row per bucket, no
+  index). `run` builds keyed at 2^12/14/16 (jobs in parallel), keeps
+  hosted-B-keyed16.db, and `compare` holds every file to the same answers (and,
+  with no truth, the files against each other). Keyed is OUT for a download pack:
+  the real update 20261024->20261028 would re-send 24-181 MB gz (plan §11 end).
+  Tests 60 (21 in test_hosted.py); keyed mutants 12/12 (mut_keyed.py).
+- D1 MEASURED 2026-11-01 (throwaway database, deleted; LMS-Discography `docs/hosted-pack-plan.md` §11 end): an
+  upsert writes 1 + one per index of its table, new or existing, changed or not; a delete by key writes 1 (no
+  index entry); whole emptied pages are given back at once, part-empty ones never; no VACUUM. `grow` and
+  `report` count that way (the report from the per-table puts, so a run made before the change reads right).
 - The workflow publishes nothing and never touches Cloudflare. It commits
   `reports/hosted-<dump B>.txt` here and keeps hosted-B.db, pages.json,
   queries.jsonl, truth.jsonl, aliases-B.tsv and the Sources.pm md5 14 days as an

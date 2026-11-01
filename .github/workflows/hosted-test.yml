@@ -1,11 +1,14 @@
 # THE HOSTED PACK: today's pack + every artist's group list + the whole release
-# map + barcodes + streaming album ids + the alias / old-name keys, in today's
-# table layout (LMS-Discography docs/hosted-pack-plan.md, sections 10 and 11;
+# map + barcodes + streaming album ids + the alias / old-name keys
+# (LMS-Discography docs/hosted-pack-plan.md, sections 10 and 11;
 # Simon, 2026-11-01: "lets look to add everything from the last list and we test
 # it all to see if we lose anything before mving to cloudflare", "if we do we go
-# back to MB for the problematic ones"). From the two dumps MusicBrainz serves (A,
-# the older, and B), builds today's pack and the candidate tables of each
-# (measure_extra.py), then builder/hosted.py `run`:
+# back to MB for the problematic ones"). Two layouts of the same content, side by
+# side (Simon, 2026-11-01: one pack only, so the hosted layout is free to choose,
+# and the keyed one "we still should not discount"): today's tables, and keyed
+# buckets at 4,096 / 16,384 / 65,536 a kind. From the two dumps MusicBrainz serves
+# (A, the older, and B), builds today's pack and the candidate tables of each
+# (measure_extra.py), then builder/hosted.py `run`, for each layout:
 #   - the file from dump B: rows a first load writes, size on disk and gzipped,
 #     what each extra adds;
 #   - the delta A -> B, proven (A + delta == B), applied IN PLACE as the Worker
@@ -14,9 +17,9 @@
 #   - every lookup Discography makes today, through Pack.pm on today's pack (B),
 #     against the hosted reader (worker/reader.mjs); the new lookups against
 #     answers built from the dump's own facts.
-# Commits reports/hosted-<B>.txt to this branch and keeps dump B's file, its
-# aliases.tsv, pages.json, queries.jsonl and truth.jsonl as an artifact for the
-# local test, which also asks MusicBrainz itself: a sample of its alias search and
+# Commits reports/hosted-<B>.txt to this branch and keeps dump B's files (tables,
+# keyed at 65,536), its aliases.tsv, pages.json, queries.jsonl and truth.jsonl as
+# an artifact for the local test, which also asks MusicBrainz itself: a sample of its alias search and
 # its title search (the two lookups the extras would replace), of Simon's local
 # mirror, which this runner cannot reach (Simon, 2026-11-01: "use the local MB
 # mirror not public MB"; builder/hosted.py, THE LOCAL TEST). This run asks
@@ -118,7 +121,7 @@ jobs:
           rm -rf work
           df -h .
 
-      - name: The hosted file, its delta, its answers
+      - name: The hosted files (both layouts), their deltas, their answers
         run: |
           python3 -I builder/hosted.py run out/base-A.db out/facts-A.db out/aliases-A.tsv \
             out/base-B.db out/facts-B.db out/aliases-B.tsv "$PWD/dscp" out/run \
@@ -141,6 +144,7 @@ jobs:
         run: |
           mkdir -p keep
           gzip -6 -c out/run/hosted-B.db > keep/hosted-B.db.gz
+          gzip -6 -c out/run/hosted-B-keyed16.db > keep/hosted-B-keyed16.db.gz
           gzip -6 -c out/run/queries.jsonl > keep/queries.jsonl.gz
           gzip -6 -c out/run/truth.jsonl > keep/truth.jsonl.gz
           gzip -6 -c out/aliases-B.tsv > keep/aliases-B.tsv.gz

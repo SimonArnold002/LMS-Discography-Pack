@@ -2,8 +2,10 @@
 // local test and the runner: the reader (worker/reader.mjs) runs unchanged.
 //
 // Counted per query: rows_read = the rows the query returns. That is a LOWER
-// bound of D1's count: D1 counts rows SCANNED, and a join or an index probe can
-// scan more than it returns (the real count is the D1 check's job).
+// bound of D1's count: D1 counts rows SCANNED. Measured on real D1 (2026-11-01):
+// a primary-key lookup reads 1 (a miss too), an IN list of keys 2 per key, an
+// index lookup 2, a join of 2 rows 3-4. For the keyed layout (IN lists of
+// bucket keys) D1's count is up to twice this one.
 import { DatabaseSync } from 'node:sqlite';
 
 export function nodeD1(path) {

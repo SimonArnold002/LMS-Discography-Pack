@@ -1,7 +1,8 @@
 // What one cold artist page reads from a hosted pack: the lookups Discography
 // makes with today's pack for a first visit, against one file, counted the way
-// D1 bills them (worker/node-d1.mjs: exact for the keyed layout, a lower bound
-// for the narrow one). builder/hosted.py `pages` writes the list:
+// D1 bills them (worker/node-d1.mjs: rows returned, a lower bound for either
+// layout; real D1 counted up to twice that for an IN list). builder/hosted.py
+// `pages` writes the list:
 //   [{ "label", "mbid", "key", "groups": [group gids the first list holds] }]
 // A page asks: the artist read; the same-name list for its name (the search
 // that led to it); every collaboration's vetting; the group count; the extras

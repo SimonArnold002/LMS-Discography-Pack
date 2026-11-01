@@ -11,8 +11,13 @@ do we go back to MB for the problematic ones". Nothing here publishes anything,
 and nothing that reads the dump runs on Simon's Mac (the tests use the made-up
 dump in tests/fixture.py).
 
-THE CONTENT, in today's table layout (the local pack's tables, read with Pack.pm's
-own SQL; D1 counts a written row per row AND per index entry):
+THE CONTENT, in two layouts measured side by side (Simon, 2026-11-01: one pack
+only, the hosted one if this venture proves itself, else the download pack, so
+the hosted layout is free to choose): today's table layout (narrow: the local
+pack's tables, read with Pack.pm's own SQL; D1 counts a row written per row AND
+per index entry, an upsert's index entries too, none for a delete) and keyed
+(the same records as bucketed JSON documents, deflated, one row per bucket, no
+index; built from the narrow file, so the content is the same by construction):
   today's pack           format 3, as published
   group lists            rg, credit, artist_rg (measure_extra.py `lists`): every
                          group an artist is credited on, any position, for the
@@ -45,6 +50,8 @@ THE CHECKS
 Sub-commands (the workflow runs them in turn and deletes what it is done with):
   aliases  <base.db> <dsc checkout> <aliases.tsv>
   narrow   <base.db> <facts.db> <aliases.tsv> <out.db>
+  entries  <hosted.db> <entries.db>                the keyed layout's records, from the narrow file
+  keyed    <entries.db> <hosted.db> <bits> <out.db>  the keyed file at 2^bits buckets a kind (0: one a record)
   delta    <old.db> <new.db> <delta.jsonl.gz>     prints a JSON summary; proves old + delta == new
   grow     <old.db> <delta.jsonl.gz> <grown.db>   applies it in place, as the Worker will
   measure  <db> [gz]                               prints a JSON summary of the file
@@ -56,21 +63,22 @@ Sub-commands (the workflow runs them in turn and deletes what it is done with):
   mbcheck  <hosted.db> <aliases.tsv> <dsc checkout> <names> <titles> <server /ws/2/ url> <out.json>
            asks MusicBrainz (the network); prints the readable result
   run      <base A> <facts A> <aliases A> <base B> <facts B> <aliases B> <dsc> <work> <every>
-           every step above but mbcheck; prints the report
+           every step above but mbcheck, both layouts (keyed at 2^12, 2^14, 2^16); prints the report
   report   <results.json>
 
 THE LOCAL TEST (Simon's Mac; built files only, nothing from the dump): the run's
-artifact holds dump B's file, its aliases.tsv, pages.json, and the run's
+artifact holds dump B's files (tables; keyed at 2^16), its aliases.tsv, pages.json, and the run's
 queries.jsonl and truth.jsonl (the dump's own answers, built on the runner);
 today's published pack of the same dump is Pack.pm's side. <dsc> holds the
 Sources.pm the file was built with (DSC_REF's; mbcheck refuses another):
   perl verify/hosted_pack_answers.pl ../LMS-Discography pack-<B>.db queries.jsonl pack.jsonl
   node worker/answers.mjs hosted-B.db queries.jsonl h.jsonl
-  hosted.py compare queries.jsonl pack.jsonl truth.jsonl h.jsonl
+  node worker/answers.mjs hosted-B-keyed16.db queries.jsonl k.jsonl
+  hosted.py compare queries.jsonl pack.jsonl truth.jsonl h.jsonl     (and k.jsonl)
   node worker/pages.mjs hosted-B.db pages.json
   hosted.py mbcheck hosted-B.db aliases-B.tsv <dsc> 2000 2000 http://plex:5000/ws/2/ mbcheck.json
 """
-import base64, gzip, json, os, shutil, sqlite3, subprocess, sys, tempfile, time, urllib.parse, urllib.request, uuid
+import base64, gzip, hashlib, json, os, shutil, sqlite3, subprocess, sys, tempfile, time, urllib.parse, urllib.request, uuid, zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import measure_extra  # noqa: E402  (variant_sql: the candidate tables, as measured 2026-10-31)
@@ -79,7 +87,17 @@ HOSTED_FORMAT = 'hosted-1'
 PARTS = ['lists', 'relmap', 'barcode', 'links']   # measure_extra.py's; today's pack is the rest
 # The index entries D1 also writes, per table (format 3's three indexes; the
 # extras' tables have none).
-NARROW_INDEXES = {'artist': 1, 'rgx': 1, 'artist_rel': 1}
+NARROW_INDEXES = {'artist': 1, 'rgx': 1, 'artist_rel': 1}   # one entry each per UPSERTED row (D1, measured)
+# The keyed layout: the same content as bucketed JSON documents, one row per
+# bucket (Simon, 2026-11-01: "we still should not discount this if it can be
+# advantagous"; one pack only, hosted or download, so the hosted layout is free
+# to choose). Kinds: art (an artist and its parts, or a merged-away gid's
+# redirect), lst (its group list), grp (a group's extras), nam (a name key's
+# acts), ali (an alias key's acts), rel (a release), bar, svc.
+KINDS = ['art', 'lst', 'grp', 'nam', 'ali', 'rel', 'bar', 'svc']
+GID_KINDS = {'art', 'lst', 'grp', 'rel'}
+BITS = [12, 14, 16]                   # 4,096, 16,384 and 65,536 buckets a kind
+CAP = 2_000_000                       # D1's largest row, string or BLOB
 MB_GAP = 1.1             # musicbrainz.org's one request a second, as Discography paces it (a mirror: none)
 
 T0 = time.time()
@@ -170,6 +188,232 @@ def narrow(base, facts_db, alias_tsv, out):
     log(f'hosted file: {os.path.getsize(out):,} bytes')
 
 
+# --- the keyed layout: entries, then buckets -------------------------------------------
+
+def _h_gid(raw):
+    return int.from_bytes(raw[:8], 'big') >> 1
+
+
+def _h_text(s):
+    return int.from_bytes(hashlib.sha1(s.encode('utf-8')).digest()[:8], 'big') >> 1
+
+
+def _merge(streams):
+    """streams: {name: iterator of (id, row)} each sorted by id. Yields (id,
+    {name: [rows]}) in id order."""
+    heads = {n: next(it, None) for n, it in streams.items()}
+    while True:
+        live = [h[0] for h in heads.values() if h is not None]
+        if not live:
+            return
+        i = min(live)
+        got = {}
+        for n, it in streams.items():
+            rows = []
+            while heads[n] is not None and heads[n][0] == i:
+                rows.append(heads[n][1])
+                heads[n] = next(it, None)
+            got[n] = rows
+        yield i, got
+
+
+def _by(c, sql):
+    for r in c.execute(sql):
+        yield r[0], r[1:]
+
+
+def entries(narrow_db, out):
+    """Every entry of the keyed layout, from the narrow file (so both layouts
+    hold the same data by construction), into e(kind, h, k, v); v is the JSON
+    the reader turns into Pack.pm's answer."""
+    if os.path.exists(out):
+        os.remove(out)
+    src = sqlite3.connect(f'file:{narrow_db}?mode=ro', uri=True)
+    o = sqlite3.connect(out, isolation_level=None)
+    o.execute('PRAGMA journal_mode=OFF')
+    o.execute('PRAGMA synchronous=OFF')
+    o.execute('CREATE TABLE e (kind TEXT NOT NULL, h INTEGER NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, '
+              'PRIMARY KEY (kind, k)) WITHOUT ROWID')
+    o.execute('BEGIN')
+    n = {}
+
+    def put(kind, rows):
+        before = o.total_changes
+        o.executemany('INSERT INTO e VALUES (?,?,?,?)', rows)
+        n[kind] = n.get(kind, 0) + o.total_changes - before
+
+    # art: one artist with its parts, merged by artist id from sorted streams.
+    streams = {
+        'a': _by(src.cursor(), 'SELECT a.id, a.gid, a.name, a.ngroups, i.comment, i.type, i.country '
+                               'FROM artist a LEFT JOIN artist_info i ON i.artist = a.id ORDER BY a.id'),
+        'al': _by(src.cursor(), 'SELECT artist, name, locale, prim FROM artist_alias ORDER BY artist'),
+        'f': _by(src.cursor(), 'SELECT r.a, r.kind, r.epon, t.gid, t.name, r.skey FROM artist_rel r '
+                               'JOIN artist t ON t.id = r.b ORDER BY r.a, r.kind, r.skey'),
+        'b': _by(src.cursor(), 'SELECT r.b, r.kind, r.epon, t.gid, t.name, r.skey FROM artist_rel r '
+                               'JOIN artist t ON t.id = r.a ORDER BY r.b, r.kind, r.skey'),
+        'u': _by(src.cursor(), 'SELECT artist, svc, ext FROM artist_url ORDER BY artist, svc, ext'),
+    }
+
+    def art():
+        for _, p in _merge(streams):
+            if not p['a']:
+                continue          # parts of an artist the table lacks (none are written that way)
+            gid, name, ng, cmt, typ, cty = p['a'][0]
+            al = sorted(([nm, loc, pr] for nm, loc, pr in p['al']), key=lambda x: (x[0], x[1]))
+            rels = [[0, k, ep, hx(g), nm] for k, ep, g, nm, _ in p['f']] + \
+                   [[1, k, ep, hx(g), nm] for k, ep, g, nm, _ in p['b']]
+            doc = [name, ng, cmt, typ, cty, al, rels, [[s_, e] for s_, e in p['u']]]
+            yield 'art', _h_gid(gid), hx(gid), jdump(doc)
+        for g, a in src.cursor().execute('SELECT r.gid, t.gid FROM artist_redirect r JOIN artist t ON t.id = r.artist'):
+            yield 'art', _h_gid(g), hx(g), jdump(hx(a))
+    put('art', art())
+    log(f"entries art {n['art']:,}")
+
+    # lst: an artist's group list, as the narrow reader's artistList gives it.
+    def lst():
+        cur, rows = None, []
+        for a, g, title, date, typ, sec, cover, credit in src.execute(
+                'SELECT a.gid, g.gid, g.title, g.date, g.type, g.sec, g.cover, c.name FROM artist_rg ar '
+                'JOIN artist a ON a.id = ar.artist JOIN rg g ON g.id = ar.rg LEFT JOIN credit c ON c.id = g.credit '
+                'ORDER BY ar.artist, ar.rg'):
+            if a != cur:
+                if rows:
+                    yield 'lst', _h_gid(cur), hx(cur), jdump(rows)
+                cur, rows = a, []
+            rows.append([hx(g), title, date, typ, sec, cover, credit])
+        if rows:
+            yield 'lst', _h_gid(cur), hx(cur), jdump(rows)
+    put('lst', lst())
+    log(f"entries lst {n['lst']:,}")
+
+    # grp: the extras (today's rgx and its three tables).
+    ext = {}
+    for i, g, boot, dg in src.execute('SELECT id, gid, boot, discogs FROM rgx'):
+        ext[i] = [g, [boot, dg, [], [], []]]
+    for i, nm in src.execute('SELECT rg, name FROM rg_alias ORDER BY rg, name'):
+        ext[i][1][2].append(nm)
+    for i, t in src.execute('SELECT rg, title FROM rg_edition ORDER BY rg, title'):
+        ext[i][1][3].append(t)
+    for i, k, u in src.execute('SELECT rg, kind, url FROM rg_url ORDER BY rg, kind'):
+        ext[i][1][4].append([k, u])
+    put('grp', (('grp', _h_gid(g), hx(g), jdump(x)) for g, x in ext.values()))
+    del ext
+    log(f"entries grp {n['grp']:,}")
+
+    def names(kind, sql, row):
+        cur, rows = None, []
+        for r in src.execute(sql):
+            if not isinstance(r[0], str):           # a barcode: its digits are the key text
+                r = (str(r[0]),) + tuple(r[1:])
+            if r[0] != cur:
+                if rows:
+                    yield kind, _h_text(cur), cur, jdump(rows)
+                cur, rows = r[0], []
+            rows.append(row(r))
+        if rows:
+            yield kind, _h_text(cur), cur, jdump(rows)
+    put('nam', names('nam',
+        'SELECT n.key, a.gid, a.name, a.ngroups, i.comment, i.type, i.country, '
+        "(SELECT al.name FROM artist_alias al WHERE al.artist = a.id AND al.locale = 'en' AND al.prim = 1 "
+        ' ORDER BY al.name LIMIT 1) '
+        'FROM artist_name n JOIN artist a ON a.id = n.artist LEFT JOIN artist_info i ON i.artist = a.id '
+        'ORDER BY n.key, a.ngroups DESC, a.name, a.id',
+        lambda r: [hx(r[1]), r[2], r[3], r[4], r[5], r[6], r[7]]))
+    put('ali', names('ali', 'SELECT n.key, a.gid, a.name, a.ngroups FROM alias_name n JOIN artist a ON a.id = n.artist '
+                            'ORDER BY n.key, a.ngroups DESC, a.name, a.id', lambda r: [hx(r[1]), r[2], r[3]]))
+    log(f"entries nam {n['nam']:,}, ali {n['ali']:,}")
+
+    put('rel', (('rel', _h_gid(g), hx(g), jdump([hx(rg), t, s_]))
+                for g, rg, t, s_ in src.execute('SELECT gid, rg, type, sec FROM release')))
+    put('bar', names('bar', 'SELECT b.code, g.gid FROM barcode b JOIN rg g ON g.id = b.rg '
+                            'ORDER BY b.code, g.gid', lambda r: hx(r[1])))
+    # The key text: a number as digits, an id kept as text (Spotify's, Qobuz's
+    # with letters) as it is.
+    put('svc', names('svc', "SELECT s.svc || ':' || s.ext, g.gid FROM svc_album s JOIN rg g ON g.id = s.rg "
+                            "ORDER BY s.svc || ':' || s.ext, g.gid", lambda r: hx(r[1])))
+    log(f"entries rel {n['rel']:,}, bar {n['bar']:,}, svc {n['svc']:,}")
+    o.execute('COMMIT')
+    o.execute('CREATE INDEX e_bucket ON e (kind, h, k)')
+    src.close()
+    o.close()
+    return n
+
+
+def _deflate(b):
+    c = zlib.compressobj(9, zlib.DEFLATED, -15, 9)
+    return c.compress(b) + c.flush()
+
+
+def _key_bytes(kind, k):
+    return bytes.fromhex(k) if kind in GID_KINDS else k.encode('utf-8')
+
+
+def keyed(entries_db, narrow_db, bits, out):
+    """The keyed file for one bucket size (bits 0 = one row per entry): every
+    kind a table (k BLOB PRIMARY KEY, v BLOB) WITHOUT ROWID, no other index; a
+    bucket's v is its entries as one JSON object {key: entry}, deflated. The same
+    entries give the same bytes, so a delta holds only the buckets that changed.
+    Returns the values over D1's 2 MB cap (kind, bucket, bytes)."""
+    if os.path.exists(out):
+        os.remove(out)
+    src = sqlite3.connect(f'file:{entries_db}?mode=ro', uri=True)
+    nar = sqlite3.connect(f'file:{narrow_db}?mode=ro', uri=True)
+    meta = dict(nar.execute('SELECT key, value FROM meta'))
+    names = {t: dict(nar.execute(f'SELECT id, name FROM {t}')) for t in ('artist_type', 'rg_type', 'rg_sec')}
+    probe = dict(nar.execute('SELECT name, key FROM namekey_probe'))
+    nar.close()
+    meta.update({'hosted_layout': 'keyed', 'hosted_bits': str(bits),
+                 'names': jdump({t: {str(i): v for i, v in d.items()} for t, d in names.items()}),
+                 'namekey_probe': jdump(probe)})
+    o = sqlite3.connect(out, isolation_level=None)
+    o.execute('PRAGMA journal_mode=OFF')
+    o.execute('PRAGMA synchronous=OFF')
+    o.execute('PRAGMA page_size=4096')
+    o.execute('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID')
+    for kind in KINDS:
+        o.execute(f'CREATE TABLE {kind} (k BLOB PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID')
+    o.execute('BEGIN')
+    o.executemany('INSERT INTO meta VALUES (?,?)', sorted(meta.items()))
+    over = []
+    for kind in KINDS:
+        if bits == 0:
+            # Key order: lower-case hex sorts as its bytes, and SQLite's TEXT
+            # order is the UTF-8 bytes' order, so no sort is needed here.
+            def rows():
+                for k, v in src.execute('SELECT k, v FROM e WHERE kind = ? ORDER BY k', (kind,)):
+                    b = v.encode('utf-8')
+                    if len(b) > CAP:
+                        over.append((kind, k, len(b)))
+                    yield _key_bytes(kind, k), b
+            o.executemany(f'INSERT INTO {kind} VALUES (?,?)', rows())
+            continue
+        cur = src.execute('SELECT h, k, v FROM e WHERE kind = ? ORDER BY h, k', (kind,))
+        shift = 63 - bits
+
+        def buckets():
+            b, parts = None, []
+            for h, k, v in cur:
+                x = h >> shift
+                if x != b and parts:
+                    yield b, parts
+                    parts = []
+                b = x
+                parts.append(jdump(k) + ':' + v)
+            if parts:
+                yield b, parts
+        for b, parts in buckets():
+            v = _deflate(('{' + ','.join(parts) + '}').encode('utf-8'))
+            if len(v) > CAP:
+                over.append((kind, b, len(v)))
+            o.execute(f'INSERT INTO {kind} VALUES (?,?)', (b.to_bytes(4, 'big'), v))
+    o.execute('COMMIT')
+    o.execute('VACUUM')
+    o.close()
+    src.close()
+    log(f'keyed bits {bits}: {os.path.getsize(out):,} bytes' + (f'; {len(over)} value(s) OVER THE 2 MB CAP' if over else ''))
+    return over
+
+
 # --- the delta, as the Worker will receive it ----------------------------------------------
 
 def _tables(c, schema='main'):
@@ -233,8 +477,10 @@ def delta(old, new, out):
 def grow(old, delta_path, out):
     """Apply a delta to a copy of old IN PLACE, the Worker's way: per line, a
     DELETE by key or an INSERT ... ON CONFLICT DO UPDATE (an upsert), no
-    VACUUM. Counts the rows D1 would write: new rows, replaced rows, deleted
-    rows, and (narrow) the index entries those touch."""
+    VACUUM. Counts the rows D1 writes, as measured on real D1 (2026-11-01,
+    scratch database): an upsert = 1 + one per index of its table, new or
+    existing, changed or not; a DELETE by key = 1, its index entries not
+    counted."""
     shutil.copyfile(old, out)
     c = sqlite3.connect(out, isolation_level=None)
     tabs = _tables(c)
@@ -264,7 +510,7 @@ def grow(old, delta_path, out):
                 had = c.execute(exists, [vals[i] for i in pki]).fetchone()
                 c.execute(ins, vals)
                 n['replaced' if had else 'new'] += 1
-            n['index'] += idx
+                n['index'] += idx
     c.execute('COMMIT')
     pages, free, psize = (c.execute(f'PRAGMA {p}').fetchone()[0] for p in ('page_count', 'freelist_count', 'page_size'))
     c.close()
@@ -296,6 +542,7 @@ def same(a, b):
 def measure(path, gz=False):
     c = sqlite3.connect(f'file:{path}?mode=ro', uri=True)
     meta = dict(c.execute('SELECT key, value FROM meta'))
+    keyed_file = meta.get('hosted_layout') == 'keyed'
     try:
         disk = dict(c.execute('SELECT name, sum(pgsize) FROM dbstat GROUP BY name'))
     except sqlite3.OperationalError:
@@ -308,12 +555,17 @@ def measure(path, gz=False):
         rows = c.execute(f'SELECT count(*) FROM {_q(t)}').fetchone()[0]
         x = {'rows': rows, 'index_rows': rows * len(idx.get(t, [])),
              'disk': disk.get(t, 0) + sum(disk.get(i, 0) for i in idx.get(t, []))}
+        if keyed_file and t in KINDS:
+            sizes = sorted(s_ for (s_,) in c.execute(f'SELECT length(v) FROM {t}'))
+            if sizes:
+                x.update({'v_median': sizes[len(sizes) // 2], 'v_p99': sizes[min(len(sizes) - 1, int(len(sizes) * .99))],
+                          'v_max': sizes[-1], 'v_bytes': sum(sizes)})
         tables[t] = x
     pages, free, psize = (c.execute(f'PRAGMA {p}').fetchone()[0] for p in ('page_count', 'freelist_count', 'page_size'))
     c.close()
     out = {'path': os.path.basename(path), 'size': os.path.getsize(path), 'pages': pages, 'free_pages': free,
            'page_size': psize, 'layout': meta.get('hosted_layout'),
-           'dump': meta.get('dump'), 'tables': tables,
+           'bits': meta.get('hosted_bits'), 'dump': meta.get('dump'), 'tables': tables,
            'rows': sum(x['rows'] for x in tables.values()),
            'index_rows': sum(x['index_rows'] for x in tables.values())}
     if gz:
@@ -586,6 +838,7 @@ def compare(queries_path, pack_answers, truth_answers, hosted):
             elif 'skip' in pack:
                 st['unchecked'] += 1
                 want = got[0] if got else None
+                bad |= {lab for lab, g in zip(labels[1:], got[1:]) if g != want}     # the files against each other
             if want not in (None, [], {}):
                 st['answered'] += 1
             if bad:
@@ -860,11 +1113,39 @@ def _node(script, *args):
     return json.loads(r.stdout.strip().splitlines()[-1])
 
 
-def run(base_a, facts_a, alias_a, base_b, facts_b, alias_b, dsc, work, every=1, named=None):
+def _bits_job(args):
+    """One bucket size of the keyed layout: both files, the delta and its proof,
+    the growth, the page reads and the answers. Runs in a worker process."""
+    bits, ent_a, ent_b, nar_a, nar_b, work, qpath, ppath, keep = args
+    a = os.path.join(work, f'hosted-A-keyed{bits}.db')
+    b = os.path.join(work, f'hosted-B-keyed{bits}.db')
+    d = os.path.join(work, f'keyed{bits}.jsonl.gz')
+    t = time.time()
+    over = keyed(ent_a, nar_a, bits, a) + keyed(ent_b, nar_b, bits, b)
+    r = {'layout': 'keyed', 'bits': bits, 'build_s': round(time.time() - t, 1),
+         'over_cap': over, 'fresh': measure(b, gz=True), 'old': measure(a)}
+    r['delta'] = delta(a, b, d)
+    r['pages'] = _node('pages.mjs', b, ppath)
+    ans = os.path.join(work, f'answers-keyed{bits}.jsonl')
+    r['answers_run'] = _node('answers.mjs', b, qpath, ans)
+    r['answers'] = ans
+    os.remove(a)
+    os.remove(d)
+    if not keep:
+        os.remove(b)
+    return r
+
+
+def run(base_a, facts_a, alias_a, base_b, facts_b, alias_b, dsc, work, every=1, named=None,
+        bits_list=None, keep_bits=16, jobs=3):
     """Every step but mbcheck (the runner cannot reach Simon's mirror: the local
-    test asks it); returns the results (also in <work>/results.json). Deletes
-    the files it is done with as it goes; keeps hosted-B.db, pages.json,
+    test asks it), for both layouts of the same content: today's tables
+    (narrow) and the keyed buckets at each of bits_list; returns the results
+    (also in <work>/results.json). Deletes the files it is done with as it
+    goes; keeps hosted-B.db, hosted-B-keyed<keep_bits>.db, pages.json,
     queries.jsonl and truth.jsonl (the local test's)."""
+    from concurrent.futures import ProcessPoolExecutor
+    bits_list = BITS if bits_list is None else bits_list
     os.makedirs(work, exist_ok=True)
     res = {'started': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}
     old, new = os.path.join(work, 'hosted-A.db'), os.path.join(work, 'hosted-B.db')
@@ -888,14 +1169,27 @@ def run(base_a, facts_a, alias_a, base_b, facts_b, alias_b, dsc, work, every=1, 
     d = os.path.join(work, 'hosted.jsonl.gz')
     h['delta'] = delta(old, new, d)
     os.remove(d)
-    os.remove(old)
     h['pages'] = _node('pages.mjs', new, ppath)
     ans = os.path.join(work, 'answers-hosted.jsonl')
     h['answers_run'] = _node('answers.mjs', new, qpath, ans)
     res['hosted'] = h
+    hosted = [('narrow', ans)]
+    log('keyed: entries')
+    ent_a, ent_b = os.path.join(work, 'entries-A.db'), os.path.join(work, 'entries-B.db')
+    res['entries'] = {'A': entries(old, ent_a), 'B': entries(new, ent_b)}
+    res['keyed'] = []
+    job_args = [(bits, ent_a, ent_b, old, new, work, qpath, ppath, bits == keep_bits) for bits in bits_list]
+    with ProcessPoolExecutor(max_workers=jobs) as ex:
+        for k in ex.map(_bits_job, job_args):
+            log(f"keyed bits {k['bits']} done ({k['build_s']} s to build)")
+            hosted.append((f"keyed {k['bits']}", k.pop('answers')))
+            res['keyed'].append(k)
+    for p_ in (ent_a, ent_b, old):
+        os.remove(p_)
     log('comparing the answers')
-    res['compare'] = compare(qpath, pack_ans, tpath, [('hosted', ans)])
-    for p_ in (ans, pack_ans):           # queries.jsonl and truth.jsonl go with the file, for the local test
+    res['compare'] = compare(qpath, pack_ans, tpath, hosted)
+    res['labels'] = [lab for lab, _ in hosted]
+    for p_ in [a for _, a in hosted] + [pack_ans]:   # queries.jsonl and truth.jsonl go with the file, for the local test
         os.remove(p_)
     res['finished'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
     with open(os.path.join(work, 'results.json'), 'w', encoding='utf-8') as f:
@@ -917,6 +1211,10 @@ def _mb(n):
 
 def _pct(n, of):
     return f'{100 * n / of:.2f}%'
+
+
+def _buckets(bits):
+    return 'one a record' if not bits else f'{1 << bits:,}'
 
 
 EXTRA_TABLES = {'rg': 'group lists', 'credit': 'group lists', 'artist_rg': 'group lists',
@@ -955,18 +1253,57 @@ def report(res):
     p('\n--- 2. one delta (dump A -> dump B) applied IN PLACE, as the Worker will (upsert / delete per row, no VACUUM)')
     d = h['delta']['apply']
     g = d['size'] - f['size']
-    p(f"rows written: {d['new']:,} new + {d['replaced']:,} replaced + {d['deleted']:,} deleted + {d['index']:,} index "
-      f"entries (an upper bound) = {d['rows_written']:,}; x {DELTAS_MONTH:.1f} a month = "
-      f"{_pct(d['rows_written'] * DELTAS_MONTH, WRITES_MONTH)} of 50M")
+    # D1's own counting, measured 2026-11-01: index entries on upserts only (none
+    # for a delete), whatever the run's grow() counted then.
+    ix = sum(pt * NARROW_INDEXES.get(t, 0) for t, (pt, dl) in h['delta']['tables'].items())
+    w = d['new'] + d['replaced'] + d['deleted'] + ix
+    p(f"rows written: {d['new']:,} new + {d['replaced']:,} replaced + {d['deleted']:,} deleted + {ix:,} index "
+      f"entries (upserts only: D1 counts none for a delete) = {w:,}; x {DELTAS_MONTH:.1f} a month = "
+      f"{_pct(w * DELTAS_MONTH, WRITES_MONTH)} of 50M")
     p('per table (puts, dels): ' + ', '.join(f'{t} {pt:,}/{dl:,}' for t, (pt, dl) in sorted(h['delta']['tables'].items())
                                             if pt or dl))
     p(f"delta {_mb(h['delta']['bytes_gz'])} gzipped; the grown file {_mb(d['size'])} against {_mb(f['size'])} fresh "
       f"({('+' if g >= 0 else '') + _mb(g).strip()}), {d['free_pages']:,} free pages")
+    d1 = d['size'] - d['free_pages'] * d['page_size']
+    p(f"on D1, which gives whole free pages back at once but never compacts a part-empty one (measured): about "
+      f"{_mb(d1)} ({('+' if d1 >= f['size'] else '') + _mb(d1 - f['size']).strip()} on the fresh file)")
     p('(growth is ONE delta from a freshly built file; later deltas are measured by later runs)')
 
-    p('\n--- 3. one cold artist page: rows read (rows returned, a LOWER bound of D1\'s rows scanned) and queries')
+    keyed_runs = sorted(res.get('keyed', []), key=lambda k: k['bits'])
+    if keyed_runs:
+        p('\n--- 1k. THE KEYED LAYOUT, the same content as bucketed documents (one row per bucket, no index): the load')
+        p(f"{'buckets a kind':16} {'rows written':>13} {'of 50M':>8} {'on disk':>11} {'gzipped':>11} {'of 5 GB':>8} {'build':>8}")
+        for k in keyed_runs:
+            fk = k['fresh']
+            p(f"{_buckets(k['bits']):>16} {fk['rows']:>13,} {_pct(fk['rows'], WRITES_MONTH):>8} {_mb(fk['size']):>11} "
+              f"{_mb(fk.get('gz', 0)):>11} {_pct(fk['size'], STORAGE):>8} {k['build_s']:>7.0f}s")
+        p('--- 2k. the keyed delta applied in place (a changed bucket is one upsert; no index entries)')
+        p(f"{'buckets a kind':16} {'new':>8} {'replaced':>9} {'deleted':>8} {'= written':>10} {'x/month of 50M':>15} "
+          f"{'delta gz':>10} {'grown':>10} {'on D1':>10} {'fresh':>10}")
+        for k in keyed_runs:
+            dk, fk = k['delta']['apply'], k['fresh']
+            p(f"{_buckets(k['bits']):>16} {dk['new']:>8,} {dk['replaced']:>9,} {dk['deleted']:>8,} {dk['rows_written']:>10,} "
+              f"{_pct(dk['rows_written'] * DELTAS_MONTH, WRITES_MONTH):>15} {_mb(k['delta']['bytes_gz']):>10} "
+              f"{_mb(dk['size']):>10} {_mb(dk['size'] - dk['free_pages'] * dk['page_size']):>10} {_mb(fk['size']):>10}")
+        p('--- 4k. keyed values per kind (bytes): median / 99% / largest; D1 refuses a row over 2,000,000 bytes')
+        for k in keyed_runs:
+            cells = [f"{kind} {k['fresh']['tables'].get(kind, {}).get('v_median', 0):,}/"
+                     f"{k['fresh']['tables'].get(kind, {}).get('v_p99', 0):,}/"
+                     f"{k['fresh']['tables'].get(kind, {}).get('v_max', 0):,}" for kind in KINDS]
+            p(f"{_buckets(k['bits']):>16}  " + '  '.join(cells))
+            if k['over_cap']:
+                p(f"   OVER THE 2 MB CAP ({len(k['over_cap'])}): {k['over_cap'][:5]}")
+
+    labs = [('narrow', h)] + [(f"keyed {_buckets(k['bits'])}", k) for k in keyed_runs]
+    p('\n--- 3. one cold artist page: rows read (rows returned, a LOWER bound: real D1 counted 1-2 per row returned, '
+      'an IN list 2 per key, a join 3-4 for 2 rows), per layout')
+    p(f"   {'page':52} " + ' '.join(f'{lab:>14}' for lab, _ in labs))
+    by = [{q['label']: q for q in x['pages']['pages']} for _, x in labs]
     for q in h['pages']['pages']:
-        p(f"   {q['label'][:60]:60} {q['rows_read']:>9,} rows {q['queries']:>6,} queries {q['ms']:>8.1f} ms (Node)")
+        p(f"   {q['label'][:52]:52} " + ' '.join(f"{r.get(q['label'], {}).get('rows_read', 0):>14,}" for r in by))
+    for what, key, fmt in (('queries, largest page', 'queries', '{:>14,}'), ('bytes read, largest page', 'bytes_read', '{:>14,}'),
+                           ('ms, slowest page (Node, this runner)', 'ms', '{:>14.1f}')):
+        p(f"   {what:52} " + ' '.join(fmt.format(max((q.get(key, 0) for q in x['pages']['pages']), default=0)) for _, x in labs))
 
     p('\n--- 4. per table (dump B): rows / on disk')
     p(', '.join(f"{t} {s_['rows']:,}/{_mb(s_['disk']).strip()}" for t, s_ in sorted(f['tables'].items())))
@@ -984,16 +1321,16 @@ def report(res):
             p(f"     {json.dumps(e['query'], ensure_ascii=False)[:200]}  differ: {e['differ']}")
             for lab, a in e['answers'].items():
                 p(f'       {lab}: {a}')
-    p('  ' + ('SAME: every answer as Pack.pm gives on today\'s pack, and every new one as the dump\'s facts give'
+    p(f"  files: {', '.join(res.get('labels', ['narrow']))}")
+    p('  ' + ('SAME: every file answers as Pack.pm does on today\'s pack, and every new lookup as the dump\'s facts give'
               if not bad else f'DIFFERENT: {bad} call(s) differ, see above'))
 
     p('\n--- 6. against MusicBrainz itself: not on the runner. The sample is asked of the local mirror on the Mac '
       '(hosted.py mbcheck, THE LOCAL TEST), with this run\'s file')
 
     p('\n--- 7. not measured by this run')
-    p('- D1 itself: how it counts an upsert of an existing key, an index entry, rows read by a join; whether it '
-      'gives back the space of a deleted or replaced row (VACUUM is not documented). To be checked on real D1 with '
-      'a few hundred rows before any big load.')
+    p('- D1 counting and space were measured separately on real D1 (2026-11-01, a scratch database, 3,224 rows '
+      'written): applied above. Not measured: loading the whole file into D1 (its time, statement and batch limits).')
     p('- Growth over more than one delta: the next runs, one per dump.')
     p('- The Worker\'s own time and CPU: section 3 times Node on this runner.')
     p(f"\nrun {res.get('started')} -> {res.get('finished')}")
@@ -1035,6 +1372,10 @@ def main():
         aliases(a[1], a[2], a[3])
     elif cmd == 'narrow' and len(a) == 5:
         narrow(a[1], a[2], a[3], a[4])
+    elif cmd == 'entries' and len(a) == 3:
+        print(jdump(entries(a[1], a[2])))
+    elif cmd == 'keyed' and len(a) == 5:
+        print(jdump(keyed(a[1], a[2], int(a[3]), a[4])))
     elif cmd == 'delta' and len(a) == 4:
         print(jdump(delta(a[1], a[2], a[3])))
     elif cmd == 'grow' and len(a) == 4:

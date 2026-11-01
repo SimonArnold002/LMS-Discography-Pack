@@ -1,12 +1,14 @@
 // The hosted pack's reader: what Discography asks its pack, answered from D1 in
 // Pack.pm's own shapes (LMS-Discography Discography/Pack.pm), so the plugin's
 // hosted client changes the transport and nothing that reads the answers.
-// Reads what builder/hosted.py writes: the local pack's tables (format 3), read
-// with Pack.pm's own SQL, plus the extras (LMS-Discography docs/hosted-pack-plan.md
-// §11): every artist's group list (rg, credit, artist_rg), the whole release map,
-// barcodes and service album ids, and the alias / old-name keys (alias_name).
+// Reads both layouts builder/hosted.py writes, of the same content (LMS-Discography
+// docs/hosted-pack-plan.md §11: today's pack plus every artist's group list, the
+// whole release map, barcodes and service album ids, the alias / old-name keys):
+//   narrow  the local pack's tables (format 3) plus the extras' tables, read with
+//           Pack.pm's own SQL;
+//   keyed   bucketed JSON documents, deflated, one primary-key read per bucket.
 // The same code runs in the Worker and, for the local test, under Node behind
-// worker/node-d1.mjs (Node 22.5+: node:sqlite).
+// worker/node-d1.mjs (Node 22.5+: node:sqlite, DecompressionStream).
 //
 // `db` is D1's interface, or one shaped like it:
 //   db.prepare(sql).bind(...args).all() -> Promise<{ results: [ {col: value} ] }>
@@ -17,6 +19,9 @@ const SVC_URL = [null, 'https://open.qobuz.com/artist/%s', 'https://www.deezer.c
                  'https://www.discogs.com/artist/%s'];
 const UUID_RE = /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i;
 const MAX_PARAMS = 100;                 // D1: bound parameters per query
+const GID_KINDS = new Set(['art', 'lst', 'grp', 'rel']);
+const enc = new TextEncoder();
+const dec = new TextDecoder();
 
 // An mbid's 32 lower-case hex digits, or null for anything that is not a uuid
 // (Pack.pm's _hex).
@@ -44,6 +49,11 @@ export function cmpCp(a, b) {
         const cx = x.value.codePointAt(0), cy = y.value.codePointAt(0);
         if (cx !== cy) return cx < cy ? -1 : 1;
     }
+}
+
+async function inflate(v) {
+    const s = new Blob([u8(v)]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    return new Response(s).text();
 }
 
 function chunks(xs, n = MAX_PARAMS) {
@@ -84,6 +94,134 @@ function releaseRow(rg, type, sec, names) {
     const secIds = Object.keys(names.rg_sec).map(Number).sort((a, b) => a - b);
     return { rg: uuidOf(rg), type: type == null ? '' : (names.rg_type[type] ?? ''),
              secondary: secIds.filter((i) => (sec || 0) & (1 << i)).map((i) => names.rg_sec[i]) };
+}
+
+// --- keyed documents ------------------------------------------------------------
+
+class Keyed {
+    constructor(db, meta) {
+        this.db = db;
+        this.bits = Number(meta.hosted_bits);
+        this.names = JSON.parse(meta.names);
+        this.layout = 'keyed';
+    }
+
+    // A gid kind's bucket: the first `bits` bits of the gid; any other kind's:
+    // of the SHA-1 of its key text (builder/hosted.py). bits 0: the key itself.
+    async bucketKey(kind, key) {
+        const raw = GID_KINDS.has(kind) ? bytesOfHex(key) : enc.encode(key);
+        if (this.bits === 0) return raw;
+        const src = GID_KINDS.has(kind) ? raw : new Uint8Array(await crypto.subtle.digest('SHA-1', raw));
+        let x = 0n;
+        for (let i = 0; i < 8; i++) x = (x << 8n) | BigInt(src[i]);
+        const n = Number(x >> BigInt(64 - this.bits));
+        return Uint8Array.of((n >>> 24) & 255, (n >>> 16) & 255, (n >>> 8) & 255, n & 255);
+    }
+
+    // { key -> entry } for the keys that have one; each bucket read once.
+    async get(kind, keys) {
+        const want = new Map();
+        for (const k of keys) {
+            const b = await this.bucketKey(kind, k);
+            const id = hexOfBytes(b);
+            if (!want.has(id)) want.set(id, { b, keys: new Set() });
+            want.get(id).keys.add(k);
+        }
+        const out = new Map();
+        for (const part of chunks([...want.values()])) {
+            const { results } = await this.db
+                .prepare(`SELECT k, v FROM ${kind} WHERE k IN (${part.map(() => '?').join(',')})`)
+                .bind(...part.map((x) => this.db.blob(x.b))).all();
+            for (const r of results) {
+                const w = want.get(hexOfBytes(r.k));
+                if (!w) continue;
+                if (this.bits === 0) {
+                    for (const k of w.keys) out.set(k, JSON.parse(dec.decode(u8(r.v))));
+                } else {
+                    const obj = JSON.parse(await inflate(r.v));
+                    for (const k of w.keys) if (Object.prototype.hasOwnProperty.call(obj, k)) out.set(k, obj[k]);
+                }
+            }
+        }
+        return out;
+    }
+
+    // [gid, document] of the artist, through a merged-away gid's redirect.
+    async artist(mbid) {
+        const h = hexOf(mbid);
+        if (!h) return null;
+        let d = (await this.get('art', [h])).get(h);
+        if (typeof d === 'string') {
+            const t = d;
+            d = (await this.get('art', [t])).get(t);
+            return Array.isArray(d) ? [t, d] : null;
+        }
+        return Array.isArray(d) ? [h, d] : null;
+    }
+
+    async artistRead(mbid) {
+        const x = await this.artist(mbid);
+        if (!x) return [];
+        const [g, d] = x;
+        return [artistReply(g, d[0], d[5], d[6], d[7]), d[1]];
+    }
+
+    async collaboration(mbid) {
+        const x = await this.artist(mbid);
+        if (!x) return null;
+        const d = x[1];
+        const from = new Set(d[6].filter(([dir, k]) => dir === 1 && k === 2).map((r) => r[3]));
+        return { members: from.size || 0, groups: d[1] || 0 };
+    }
+
+    async groupCount(mbid) {
+        const x = await this.artist(mbid);
+        return x ? x[1][1] : null;
+    }
+
+    // The artist's group list (kind lst, under the artist's own gid, so a
+    // merged-away gid goes through the art redirect first); [] when it has none.
+    async artistList(mbid) {
+        const x = await this.artist(mbid);
+        if (!x) return null;
+        return (await this.get('lst', [x[0]])).get(x[0]) || [];
+    }
+
+    async groups(mbids) {
+        const hs = (mbids || []).map(hexOf).filter(Boolean);
+        const out = {};
+        for (const [h, x] of await this.get('grp', hs)) out[uuidOf(h)] = groupExtras(x);
+        return out;
+    }
+
+    async sameName(key) {
+        if (typeof key !== 'string' || !key.length) return null;
+        const rows = (await this.get('nam', [key])).get(key) || [];
+        return rows.map((r) => sameNameRow(r, this.names));
+    }
+
+    async aliasName(key) {
+        if (typeof key !== 'string' || !key.length) return null;
+        return ((await this.get('ali', [key])).get(key) || []).map(([g, name, ng]) => ({ mbid: uuidOf(g), name, score: ng }));
+    }
+
+    async releases(mbids) {
+        const hs = (mbids || []).map(hexOf).filter(Boolean);
+        const got = await this.get('rel', hs);
+        const out = {};
+        for (const [h, [rg, t, s]] of got) out[uuidOf(h)] = releaseRow(rg, t, s, this.names);
+        return out;
+    }
+
+    async barcode(code) {
+        const k = String(code);
+        return ((await this.get('bar', [k])).get(k) || []).map(uuidOf);
+    }
+
+    async svcAlbum(svc, ext) {
+        const k = `${svc}:${ext}`;
+        return ((await this.get('svc', [k])).get(k) || []).map(uuidOf);
+    }
 }
 
 // --- the narrow tables, Pack.pm's own SQL (format 3) ------------------------------
@@ -230,6 +368,7 @@ class Narrow {
 export async function openPack(db) {
     const meta = Object.fromEntries(((await db.prepare('SELECT key, value FROM meta').all()).results)
         .map((r) => [r.key, r.value]));
+    if (meta.hosted_layout === 'keyed') return new Keyed(db, meta);
     if (meta.hosted_layout !== 'narrow') throw new Error(`not a hosted pack (layout ${meta.hosted_layout})`);
     const tables = new Set(((await db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()).results)
         .map((r) => r.name));
