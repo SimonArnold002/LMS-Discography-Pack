@@ -26,4 +26,4 @@ for await (const line of createInterface({ input: createReadStream(queries), crl
 }
 await new Promise((ok) => w.end(ok));
 d1.close();
-console.log(JSON.stringify({ db, layout: pack.layout, queries: n, ms: Date.now() - t0, ...d1.stats }));
+console.log(JSON.stringify({ db, layout: pack.layout, lookups: n, ms: Date.now() - t0, ...d1.stats }));   // queries: D1's

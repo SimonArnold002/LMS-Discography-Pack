@@ -38,6 +38,8 @@ def node():
 NODE = node()
 # Pack.pm (today's answers) needs perl's DBD::SQLite; the Tests workflow's runner may lack it.
 DBD = subprocess.run(['perl', '-MDBD::SQLite', '-e', '1'], capture_output=True).returncode == 0
+# The page-as-one-request decode times use JSON::XS, as LMS does.
+JSX = subprocess.run(['perl', '-MJSON::XS', '-e', '1'], capture_output=True).returncode == 0
 
 
 def plugin_dir(tmp):
@@ -305,9 +307,14 @@ class TestKeyed(Hosted):
                 h, 'SELECT g.gid, g.title, g.date, g.type, g.sec, g.cover, c.name FROM artist_rg ar JOIN artist x '
                    'ON x.id = ar.artist JOIN rg g ON g.id = ar.rg LEFT JOIN credit c ON c.id = g.credit '
                    'WHERE x.gid = ? ORDER BY g.id', a)]
-            self.assertEqual(self.entry(2, 'lst', a.hex()), want)
-        self.assertEqual([x[1] for x in self.entry(2, 'lst', fixture.g(1).replace('-', ''))],
-                         ['Debut', 'Joint', 'Bootleg Live', 'Post', 'Untyped'])
+            got = self.entry(2, 'lst', a.hex())
+            self.assertEqual([x[:7] for x in got], want)
+            # The 8th field: the group's extras, exactly its grp entry; none when it has none.
+            for x in got:
+                self.assertEqual(x[7] if len(x) > 7 else None, self.entry(2, 'grp', x[0]), x[1])
+        bj = self.entry(2, 'lst', fixture.g(1).replace('-', ''))
+        self.assertEqual([x[1] for x in bj], ['Debut', 'Joint', 'Bootleg Live', 'Post', 'Untyped'])
+        self.assertTrue(any(len(x) > 7 for x in bj) and any(len(x) == 7 for x in bj))   # some with extras, some not
         # "Kukl Group": the Kukl with a group first.
         self.assertEqual([x[0] for x in self.entry(2, 'ali', 'kukl group')],
                          [fixture.g(9).replace('-', ''), fixture.g(3).replace('-', '')])
@@ -517,7 +524,234 @@ class TestMbcheck(Hosted):
             self.assertEqual(len(mb.urls) - len(looked), res['alias']['asked'])
 
 
-@unittest.skipUnless(NODE and DBD, 'Node 22.5+ (node:sqlite) or perl DBD::SQLite not found')
+@unittest.skipUnless(NODE and JSX, 'Node 22.5+ (node:sqlite) or perl JSON::XS not found')
+class TestMoments(Hosted):
+    """A page as ONE request (worker/moments.mjs, plan §12): its answer is
+    exactly what the page's separate lookups give, from either layout, and its
+    size, reads and decode time are measured."""
+    VARIANTS = ('page', 'owned', 'fold_e', 'fold_all')
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        os.environ['NODE'] = NODE
+        f = cls.f[2]
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            ent = os.path.join(cls.tmp, 'm-entries.db')
+            hosted.entries(f['hosted'], ent)
+            cls.keyed = os.path.join(cls.tmp, 'm-keyed1.db')
+            hosted.keyed(ent, f['hosted'], 1, cls.keyed)
+            # Björk (forward band links: The Sugarcubes eponymous, Kukl, The Elgar Sisters) and The
+            # Sugarcubes (backward ones only: their members).
+            keys = [q(f['base'], 'SELECT key FROM artist_name WHERE artist = ?', a)[0][0] for a in (1, 2)]
+            cls.ppath = os.path.join(cls.tmp, 'm-pages.json')
+            hosted.pages(f['hosted'], f['facts'], cls.ppath, keys)
+        with open(cls.ppath, encoding='utf-8') as f:
+            cls.pages = json.load(f)
+        cls.i = next(i for i, pg in enumerate(cls.pages) if pg['mbid'] == fixture.g(1))     # Björk
+
+    def lookups(self, db, qs):
+        qp, ap = self.path('m-q.jsonl'), self.path('m-a.jsonl')
+        with open(qp, 'w', encoding='utf-8') as f:
+            f.writelines(json.dumps({'f': fn, 'a': a}, ensure_ascii=False) + '\n' for fn, *a in qs)
+        hosted._node('answers.mjs', db, qp, ap)
+        with open(ap, encoding='utf-8') as f:
+            return [json.loads(line)['r'] for line in f]
+
+    def answer(self, out, v):
+        with open(os.path.join(out, f'{self.i}-{v}.json'), encoding='utf-8') as f:
+            return json.load(f)
+
+    def test_the_answer_is_the_pages_lookups_in_one(self):
+        for db in (self.f[2]['hosted'], self.keyed):
+            out = self.path('m-' + os.path.basename(db))
+            m = hosted._node('moments.mjs', db, self.ppath, out)
+            p = self.pages[self.i]
+            read, same, collab, lst = self.lookups(db, [('artistRead', p['mbid']), ('sameName', p['key']),
+                                                        ('collaboration', fixture.g(4)), ('artistList', p['mbid'])])
+            ids = [x[0] for x in lst]
+            [groups] = self.lookups(db, [('groups', ids)])
+            self.assertTrue(groups)                        # Debut's extras at least
+            page = self.answer(out, 'page')
+            self.assertEqual(page, {'artist': read, 'sameName': same, 'collaborations': {fixture.g(4): collab},
+                                    'groups': groups})
+            # + owned: the releases the page sent, answered as releases() answers them.
+            self.assertTrue(p['releases'])
+            [rel] = self.lookups(db, [('releases', p['releases'][:100])])
+            self.assertTrue(rel)
+            self.assertEqual(self.answer(out, 'owned'), dict(page, releases=rel))
+            # + bands: Björk is in The Sugarcubes (eponymous), Kukl and The Elgar Sisters.
+            fe, fa = self.answer(out, 'fold_e'), self.answer(out, 'fold_all')
+            self.assertEqual(set(fe['bands']), {fixture.g(2)})
+            self.assertEqual(set(fa['bands']), {fixture.g(2), fixture.g(3), fixture.g(7)})
+            for b, got in fa['bands'].items():
+                r, bl = self.lookups(db, [('artistRead', b), ('artistList', b)])
+                [bg] = self.lookups(db, [('groups', [x[0] for x in bl])])
+                self.assertEqual(got, {'artist': r, 'groups': bg}, b)
+            self.assertEqual(fe['bands'][fixture.g(2)], fa['bands'][fixture.g(2)])
+            self.assertEqual({k: v for k, v in fa.items() if k != 'bands'}, page)
+            # The figures are this answer's.
+            row = m['pages'][self.i]
+            self.assertEqual(row['owned_ids'], len(p['releases'][:100]))
+            for v in self.VARIANTS:
+                x = row[v]
+                self.assertEqual(x['bytes'], os.path.getsize(os.path.join(out, f'{self.i}-{v}.json')), v)
+                self.assertTrue(0 < x['gz'], v)
+                self.assertGreater(x['queries'], 0, v)
+                self.assertGreater(x['rows_read'], 0, v)
+                self.assertEqual(x['listed'], len(ids), v)
+                self.assertEqual(x['extras'], len(groups), v)
+                self.assertIs(x['same_as_groups'], True, v)
+            self.assertEqual((row['page']['bands'], row['fold_e']['bands'], row['fold_all']['bands']), (0, 1, 3))
+            self.assertGreater(row['fold_all']['queries'], row['page']['queries'])
+            # A member's link is backward: no band folds into The Sugarcubes' page.
+            j = next(i for i, pg in enumerate(self.pages) if pg['mbid'] == fixture.g(2))
+            with open(os.path.join(out, f'{j}-fold_all.json'), encoding='utf-8') as f:
+                sc = json.load(f)
+            self.assertTrue(any(r.get('direction') == 'backward' and r.get('type') == 'member of band'
+                                for r in sc['artist'][0]['relations']))
+            self.assertEqual(sc['bands'], {})
+            # Each variant's reads are its own: a page measured alone reads the same.
+            alone = self.path('m-alone.json')
+            with open(alone, 'w', encoding='utf-8') as f:
+                json.dump([self.pages[j]], f, ensure_ascii=False)
+            one = hosted._node('moments.mjs', db, alone, self.path('m-alone'))['pages'][0]
+            for v in self.VARIANTS:
+                self.assertEqual({k: one[v][k] for k in ('queries', 'rows_read', 'bytes_read')},
+                                 {k: m['pages'][j][v][k] for k in ('queries', 'rows_read', 'bytes_read')}, v)
+
+    def test_artist_groups_is_groups_of_the_artists_list_in_both_layouts(self):
+        gids = [g for (g,) in q(self.f[2]['hosted'], 'SELECT gid FROM artist ORDER BY id')]
+        mbids = [hosted._uu(g) for g in gids] + [fixture.g(99), '00000000-0000-4000-8000-00000000dead']
+        for db in (self.f[2]['hosted'], self.keyed):
+            lists = self.lookups(db, [('artistList', m) for m in mbids])
+            one = self.lookups(db, [('artistGroups', m) for m in mbids])
+            long = self.lookups(db, [('groups', [x[0] for x in (l or [])]) for l in lists])
+            for m, l, a, b in zip(mbids, lists, one, long):
+                if l is None:
+                    self.assertIsNone(a, m)                 # an act the file does not hold: no answer
+                else:
+                    self.assertEqual(a, b, m)
+            self.assertTrue(any(a for a in one), db)        # some act has extras
+            # A merged-away id answers as the act it points at.
+            self.assertEqual(one[-2], one[0])
+
+    def test_the_page_asks_one_lookup_for_its_groups(self):
+        # What pageAnswer asks, with a pack that records the calls: his groups and each band's
+        # through artistGroups, never the list + groups() the long way.
+        js = ("import { pageAnswer } from '" + os.path.join(HERE, '..', 'worker', 'moments.mjs') + "';"
+              "const calls = [];"
+              "const rels = [{ 'target-type': 'artist', type: 'collaboration', direction: 'forward', attributes: [], artist: { id: 'c' } },"
+              "  { 'target-type': 'artist', type: 'member of band', direction: 'forward', attributes: ['eponymous'], artist: { id: 'b' } }];"
+              "const pack = new Proxy({}, { get: (t, k) => async () => { calls.push(k);"
+              "  return k === 'artistRead' ? [{ id: 'x', relations: rels }, 1] : k === 'artistGroups' ? {} : null; } });"
+              "await pageAnswer(pack, { mbid: 'x', key: 'k' }, { bands: 'all', owned: ['r'] });"
+              "console.log(JSON.stringify(calls));")
+        r = subprocess.run([NODE, '--input-type=module', '-e', js], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout), ['artistRead', 'sameName', 'collaboration', 'artistGroups', 'releases',
+                                                'artistRead', 'artistGroups'])
+
+    def test_a_list_whose_extras_differ_is_flagged(self):
+        # A keyed file whose list entry for Björk lost one group's extras: the page's one lookup
+        # no longer gives what groups(<his list>) gives, and the result says so.
+        ent = self.path('m-bad-entries.db')
+        shutil.copy(self.path('m-entries.db'), ent)
+        k = fixture.g(1).replace('-', '')
+        con = sqlite3.connect(ent)
+        doc = json.loads(con.execute("SELECT v FROM e WHERE kind = 'lst' AND k = ?", (k,)).fetchone()[0])
+        i = next(j for j, x in enumerate(doc) if len(x) > 7)
+        doc[i] = doc[i][:7]
+        con.execute("UPDATE e SET v = ? WHERE kind = 'lst' AND k = ?", (json.dumps(doc, ensure_ascii=False), k))
+        con.commit()
+        con.close()
+        bad = self.path('m-bad-keyed.db')
+        self.quiet(hosted.keyed, ent, self.f[2]['hosted'], 1, bad)
+        m = hosted._node('moments.mjs', bad, self.ppath, self.path('m-bad'))
+        self.assertEqual({v: m['pages'][self.i][v]['same_as_groups'] for v in self.VARIANTS},
+                         {v: False for v in self.VARIANTS})
+        j = next(x for x, pg in enumerate(self.pages) if pg['mbid'] == fixture.g(2))
+        self.assertTrue(m['pages'][j]['page']['same_as_groups'])     # The Sugarcubes untouched
+
+    def test_either_layout_answers_the_same_and_perl_decodes_it(self):
+        outs = {}
+        for lab, db in (('n', self.f[2]['hosted']), ('k', self.keyed)):
+            outs[lab] = self.path(f'm2-{lab}')
+            hosted._node('moments.mjs', db, self.ppath, outs[lab])
+        names = sorted(os.listdir(outs['n']))
+        self.assertEqual(names, sorted(os.listdir(outs['k'])))
+        self.assertEqual(len(names), 4 * len(self.pages))
+        for name in names:
+            got = []
+            for x in ('n', 'k'):
+                with open(os.path.join(outs[x], name), encoding='utf-8') as f:
+                    got.append(json.load(f))
+            self.assertEqual(got[0], got[1], name)
+        m = {}
+        for lab, db in (('n', self.f[2]['hosted']), ('k', self.keyed)):
+            d = self.path(f'm3-{lab}')
+            m[lab] = hosted.moments(db, self.ppath, d)
+            self.assertFalse(os.path.exists(d))            # the answers go once measured
+        self.assertTrue(m['n']['json_xs'])
+        for pn, pk in zip(m['n']['pages'], m['k']['pages']):
+            for v in self.VARIANTS:
+                self.assertEqual((pn[v]['bytes'], pn[v]['gz'] > 0), (pk[v]['bytes'], True), v)
+                for t in ('decode_ms', 'gunzip_ms'):
+                    self.assertGreaterEqual(pn[v][t]['max'], pn[v][t]['median'], (v, t))
+                    self.assertGreaterEqual(pn[v][t]['median'], 0, (v, t))
+                self.assertNotIn('file', pn[v])
+        # Something was timed: not every decode and inflate came out as nothing.
+        for t in ('decode_ms', 'gunzip_ms'):
+            self.assertGreater(sum(pg[v][t]['max'] for pg in m['n']['pages'] for v in self.VARIANTS), 0, t)
+
+    def test_each_timing_lands_in_its_own_field_from_its_own_file(self):
+        # decode_answers.pl's answer faked (real clocks cannot tell the two timings apart).
+        real = subprocess.run
+
+        def fake(extra):
+            def run(cmd, *a, **k):
+                if cmd[0] != 'perl':
+                    return real(cmd, *a, **k)
+                d = cmd[-1]
+                files = {f: {'bytes': os.path.getsize(os.path.join(d, f)) + extra, 'gz': 1,
+                             'decode_ms': [9, 7, 8, 6, 5], 'gunzip_ms': [1, 3, 2, 4, 0]} for f in os.listdir(d)}
+                return subprocess.CompletedProcess(cmd, 0, json.dumps({'perl': 'v5', 'json_xs': '4', 'files': files}) + '\n', '')
+            return run
+        with mock.patch.object(hosted.subprocess, 'run', fake(0)):
+            m = hosted.moments(self.f[2]['hosted'], self.ppath, self.path('m4'))
+        for pg in m['pages']:
+            for v in self.VARIANTS:
+                self.assertEqual((pg[v]['decode_ms'], pg[v]['gunzip_ms']),
+                                 ({'max': 9, 'median': 7}, {'max': 4, 'median': 2}), v)
+        with mock.patch.object(hosted.subprocess, 'run', fake(1)):
+            with self.assertRaises(SystemExit):            # timings of some other file's bytes
+                hosted.moments(self.f[2]['hosted'], self.ppath, self.path('m5'))
+
+    def test_the_slowest_and_the_median(self):
+        self.assertEqual(hosted._spread([0.5, 0.1, 0.3, 0.2, 0.4]), {'max': 0.5, 'median': 0.3})
+
+    def test_the_report_says_when_the_layouts_answer_differently(self):
+        def mom(nbytes):
+            x = {'listed': 5, 'extras': 2, 'bands': 0, 'bytes': nbytes, 'gz': 10, 'queries': 3, 'rows_read': 9,
+                 'ms': 1.0, 'decode_ms': {'max': 0.2, 'median': 0.1}, 'gunzip_ms': {'max': 0.1, 'median': 0.1}}
+            return {'perl': 'v5', 'json_xs': '4', 'pages': [dict({v: dict(x) for v in self.VARIANTS},
+                                                                 label='Björk', owned_ids=0)]}
+        for other, want in ((100, "every layout's answer is the same size"), (101, 'ANSWERS DIFFER BETWEEN LAYOUTS (')):
+            out = []
+            hosted._report_moments(out.append, [('narrow', {'moments': mom(100)}), ('keyed', {'moments': mom(other)})])
+            text = '\n'.join(out)
+            self.assertIn(want, text)
+            self.assertIn("every answer's extras are what groups(<his list>) gives", text)
+            self.assertNotIn('+ owned releases', text)        # none sent, so no line for it
+        # One answer whose extras are not the long way's: named.
+        off = mom(100)
+        off['pages'][0]['fold_e']['same_as_groups'] = False
+        out = []
+        hosted._report_moments(out.append, [('narrow', {'moments': mom(100)}), ('keyed', {'moments': off})])
+        self.assertIn('EXTRAS DIFFER FROM groups(<his list>) (1): [\'Björk fold_e keyed\']', '\n'.join(out))
+
+
+@unittest.skipUnless(NODE and DBD and JSX, 'Node 22.5+ (node:sqlite), perl DBD::SQLite or JSON::XS not found')
 class TestReader(Hosted):
     def test_the_whole_run_answers_as_pack_pm_and_the_dump(self):
         os.environ['NODE'] = NODE
@@ -545,6 +779,13 @@ class TestReader(Hosted):
         self.assertIn('whole release map', text)
         self.assertIn('THE KEYED LAYOUT', text)
         self.assertIn('one a record', text)
+        self.assertIn('3b. the page as ONE request', text)
+        self.assertIn("every layout's answer is the same size, to the byte", text)
+        self.assertEqual(len(res['hosted']['moments']['pages']), 3)
+        for k in res['keyed']:
+            self.assertEqual([pg['page']['bytes'] for pg in k['moments']['pages']],
+                             [pg['page']['bytes'] for pg in res['hosted']['moments']['pages']])
+        self.assertEqual([x for x in os.listdir(work) if x.startswith('moments')], [])
         self.assertTrue(os.path.exists(os.path.join(work, 'hosted-B.db')))
         self.assertTrue(os.path.exists(os.path.join(work, 'hosted-B-keyed1.db')))     # the kept bucket size
         for gone in ('hosted-A.db', 'hosted-B-keyed3.db', 'hosted-A-keyed1.db', 'entries-A.db', 'entries-B.db'):

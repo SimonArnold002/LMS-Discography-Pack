@@ -181,10 +181,25 @@ class Keyed {
 
     // The artist's group list (kind lst, under the artist's own gid, so a
     // merged-away gid goes through the art redirect first); [] when it has none.
+    // Each entry carries the group's extras as an 8th field (artistGroups);
+    // the list answers without it, as the narrow tables do.
     async artistList(mbid) {
         const x = await this.artist(mbid);
         if (!x) return null;
-        return (await this.get('lst', [x[0]])).get(x[0]) || [];
+        return ((await this.get('lst', [x[0]])).get(x[0]) || []).map((r) => r.slice(0, 7));
+    }
+
+    // The extras of every group on the artist's list, from the list's own
+    // entries: the same answer as groups(<the list's gids>), in no more reads
+    // than the list.
+    async artistGroups(mbid) {
+        const x = await this.artist(mbid);
+        if (!x) return null;
+        const out = {};
+        for (const r of (await this.get('lst', [x[0]])).get(x[0]) || []) {
+            if (r.length > 7) out[uuidOf(r[0])] = groupExtras(r[7]);
+        }
+        return out;
     }
 
     async groups(mbids) {
@@ -295,6 +310,31 @@ class Narrow {
                                 + 'FROM artist_rg ar JOIN rg g ON g.id = ar.rg LEFT JOIN credit c ON c.id = g.credit '
                                 + 'WHERE ar.artist = ? ORDER BY g.id', id))
             .map((r) => [hexOfBytes(r.gid), r.title, r.date, r.type, r.sec, r.cover, r.credit]);
+    }
+
+    // The extras of every group on the artist's list (artistList), joined
+    // through artist_rg: four queries whatever the list's length (groups() of
+    // the list's gids sends an IN list per 100). The same answer.
+    async artistGroups(mbid) {
+        if (!this.lists) return null;
+        const id = await this.id(mbid);
+        if (id == null) return null;
+        const out = {}, byId = new Map();
+        for (const r of await this.rows('SELECT x.id, x.gid, x.boot, x.discogs FROM artist_rg ar JOIN rgx x ON x.id = ar.rg '
+                                        + 'WHERE ar.artist = ? ORDER BY x.id', id)) {
+            const e = [r.boot, r.discogs, [], [], []];
+            byId.set(r.id, e);
+            out[uuidOf(hexOfBytes(r.gid))] = e;
+        }
+        const add = (i, f) => { const e = byId.get(i); if (e) f(e); };
+        for (const r of await this.rows('SELECT a.rg, a.name FROM artist_rg ar JOIN rg_alias a ON a.rg = ar.rg '
+                                        + 'WHERE ar.artist = ? ORDER BY a.rg, a.name', id)) add(r.rg, (e) => e[2].push(r.name));
+        for (const r of await this.rows('SELECT t.rg, t.title FROM artist_rg ar JOIN rg_edition t ON t.rg = ar.rg '
+                                        + 'WHERE ar.artist = ? ORDER BY t.rg, t.title', id)) add(r.rg, (e) => e[3].push(r.title));
+        for (const r of await this.rows('SELECT u.rg, u.kind, u.url FROM artist_rg ar JOIN rg_url u ON u.rg = ar.rg '
+                                        + 'WHERE ar.artist = ? ORDER BY u.rg, u.kind', id)) add(r.rg, (e) => e[4].push([r.kind, r.url]));
+        for (const k of Object.keys(out)) out[k] = groupExtras(out[k]);
+        return out;
     }
 
     async byGids(table, cols, mbids) {

@@ -91,7 +91,7 @@ what `make_delta.apply()` does.
      what keep its differences honest. Refuses a Sources.pm whose name keys are
      not the file's (namekey_probe).
 - Files: `builder/hosted.py` (aliases, narrow, delta, grow, measure, dumps,
-  queries, truth, pages, compare, mbcheck, run, report), `worker/reader.mjs`
+  queries, truth, pages, moments, compare, mbcheck, run, report), `worker/reader.mjs`
   (the Worker's reader, Pack.pm's answer shapes, plus artistList and aliasName),
   `worker/node-d1.mjs` (D1's interface over node:sqlite; rows_read a LOWER bound
   of D1's rows scanned), `worker/answers.mjs`, `worker/pages.mjs` (one cold page;
@@ -115,12 +115,23 @@ what `make_delta.apply()` does.
   with no truth, the files against each other). Keyed is OUT for a download pack:
   the real update 20261024->20261028 would re-send 24-181 MB gz (plan §11 end).
   Tests 60 (21 in test_hosted.py); keyed mutants 12/12 (mut_keyed.py).
+- ONE REQUEST PER PAGE (2026-11-01, LMS-Discography `docs/hosted-pack-plan.md` §12; Simon "yes" to measuring it):
+  `worker/moments.mjs` builds each named page's whole answer (artist read, same-name list, collaborations' vetting,
+  the extras of every group on the file's own list; variants: + up to 100 owned release ids from `pages` (the facts'
+  f_release), + eponymous bands, + every forward band = an upper bound of the fold) and measures D1 queries, rows read,
+  kB plain/gz per layout; `verify/decode_answers.pl` times Perl's memGunzip + JSON::XS decode, 5 runs each (raw ms;
+  `hosted._spread` takes the slowest and the median; memGunzip EMPTIES its buffer, so each run gets a copy).
+  `hosted.moments()` runs both and deletes the answers; `run` does it for narrow and every keyed size; report 3b.
+  Needs perl JSON::XS (the workflow installs libjson-xs-perl; tests skip without it). TestMoments (5): the answer ==
+  the separate lookups, both layouts; The Sugarcubes (backward links only) fold nothing; reads reset per variant;
+  timings filed from their own file (Perl's step faked); the report flags layouts that differ. 66 tests; mutants
+  21/21 (session scratchpad mut_moments.py).
 - D1 MEASURED 2026-11-01 (throwaway database, deleted; LMS-Discography `docs/hosted-pack-plan.md` §11 end): an
   upsert writes 1 + one per index of its table, new or existing, changed or not; a delete by key writes 1 (no
   index entry); whole emptied pages are given back at once, part-empty ones never; no VACUUM. `grow` and
   `report` count that way (the report from the per-table puts, so a run made before the change reads right).
 - The workflow publishes nothing and never touches Cloudflare. It commits
-  `reports/hosted-<dump B>.txt` here and keeps hosted-B.db, pages.json,
+  `reports/hosted-<dump B>-run<run id>.txt` here (one per run: two runs of one dump clashed on one name, 2026-11-01) and keeps hosted-B.db, pages.json,
   queries.jsonl, truth.jsonl, aliases-B.tsv and the Sources.pm md5 14 days as an
   artifact for the local test (`hosted.py` docstring: THE LOCAL TEST, which
   includes mbcheck on the mirror).

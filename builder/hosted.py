@@ -59,6 +59,7 @@ Sub-commands (the workflow runs them in turn and deletes what it is done with):
   queries  <hosted.db> <queries.jsonl> [every]    the lookups to check (also the local test's)
   truth    <base.db> <facts.db> <aliases.tsv> <queries.jsonl> <truth.jsonl>
   pages    <hosted.db> <facts.db> <pages.json>    the page sample (its groups from the facts)
+  moments  <hosted.db> <pages.json> <outdir>      each page as ONE request: answer size, D1 reads, Perl decode
   compare  <queries.jsonl> <Pack.pm answers> <truth.jsonl|-> <answers.jsonl>   exit 1 on a difference
   mbcheck  <hosted.db> <aliases.tsv> <dsc checkout> <names> <titles> <server /ws/2/ url> <out.json>
            asks MusicBrainz (the network); prints the readable result
@@ -76,6 +77,7 @@ Sources.pm the file was built with (DSC_REF's; mbcheck refuses another):
   node worker/answers.mjs hosted-B-keyed16.db queries.jsonl k.jsonl
   hosted.py compare queries.jsonl pack.jsonl truth.jsonl h.jsonl     (and k.jsonl)
   node worker/pages.mjs hosted-B.db pages.json
+  hosted.py moments hosted-B.db pages.json moments/
   hosted.py mbcheck hosted-B.db aliases-B.tsv <dsc> 2000 2000 http://plex:5000/ws/2/ mbcheck.json
 """
 import base64, gzip, hashlib, json, os, shutil, sqlite3, subprocess, sys, tempfile, time, urllib.parse, urllib.request, uuid, zlib
@@ -269,24 +271,7 @@ def entries(narrow_db, out):
     put('art', art())
     log(f"entries art {n['art']:,}")
 
-    # lst: an artist's group list, as the narrow reader's artistList gives it.
-    def lst():
-        cur, rows = None, []
-        for a, g, title, date, typ, sec, cover, credit in src.execute(
-                'SELECT a.gid, g.gid, g.title, g.date, g.type, g.sec, g.cover, c.name FROM artist_rg ar '
-                'JOIN artist a ON a.id = ar.artist JOIN rg g ON g.id = ar.rg LEFT JOIN credit c ON c.id = g.credit '
-                'ORDER BY ar.artist, ar.rg'):
-            if a != cur:
-                if rows:
-                    yield 'lst', _h_gid(cur), hx(cur), jdump(rows)
-                cur, rows = a, []
-            rows.append([hx(g), title, date, typ, sec, cover, credit])
-        if rows:
-            yield 'lst', _h_gid(cur), hx(cur), jdump(rows)
-    put('lst', lst())
-    log(f"entries lst {n['lst']:,}")
-
-    # grp: the extras (today's rgx and its three tables).
+    # grp: the extras (today's rgx and its three tables), by group id.
     ext = {}
     for i, g, boot, dg in src.execute('SELECT id, gid, boot, discogs FROM rgx'):
         ext[i] = [g, [boot, dg, [], [], []]]
@@ -296,6 +281,27 @@ def entries(narrow_db, out):
         ext[i][1][3].append(t)
     for i, k, u in src.execute('SELECT rg, kind, url FROM rg_url ORDER BY rg, kind'):
         ext[i][1][4].append([k, u])
+
+    # lst: an artist's group list, as the narrow reader's artistList gives it,
+    # each group carrying its extras as an 8th field when it has any (plan §11,
+    # Simon 2026-11-01: a page then opens the artist's own buckets, not one per
+    # group; a group shared by several artists is held once per artist).
+    def lst():
+        cur, rows = None, []
+        for a, i, g, title, date, typ, sec, cover, credit in src.execute(
+                'SELECT a.gid, g.id, g.gid, g.title, g.date, g.type, g.sec, g.cover, c.name FROM artist_rg ar '
+                'JOIN artist a ON a.id = ar.artist JOIN rg g ON g.id = ar.rg LEFT JOIN credit c ON c.id = g.credit '
+                'ORDER BY ar.artist, ar.rg'):
+            if a != cur:
+                if rows:
+                    yield 'lst', _h_gid(cur), hx(cur), jdump(rows)
+                cur, rows = a, []
+            rows.append([hx(g), title, date, typ, sec, cover, credit] + ([ext[i][1]] if i in ext else []))
+        if rows:
+            yield 'lst', _h_gid(cur), hx(cur), jdump(rows)
+    put('lst', lst())
+    log(f"entries lst {n['lst']:,}")
+
     put('grp', (('grp', _h_gid(g), hx(g), jdump(x)) for g, x in ext.values()))
     del ext
     log(f"entries grp {n['grp']:,}")
@@ -772,7 +778,9 @@ def pages(narrow_db, facts_db, out, named=None):
     """The named artists (each act of the name up to three) with the groups a
     page of theirs lists: every group credited to them in any position, from
     the dump's facts (the first list is ListenBrainz's and the community API's,
-    not the pack's; measure_extra.py's `lists` holds the same pairs)."""
+    not the pack's; measure_extra.py's `lists` holds the same pairs); and up to
+    100 release ids of those groups (moments.mjs: an owner's tags sent with
+    the page's request)."""
     c = sqlite3.connect(f'file:{narrow_db}?mode=ro', uri=True)
     c.execute('ATTACH ? AS f', (f'file:{facts_db}?mode=ro',))
     res = []
@@ -782,7 +790,11 @@ def pages(narrow_db, facts_db, out, named=None):
                                         (key,)).fetchall():
             gids = [_uu(x) for (x,) in c.execute('SELECT g.gid FROM f.f_artist_rg ar JOIN f.f_rg g ON g.id = ar.rg '
                                                  'WHERE ar.artist = ? AND g.inlist ORDER BY g.id', (i,))]
-            res.append({'label': f'{name} ({_uu(g)[:8]}, {ng} groups)', 'mbid': _uu(g), 'key': key, 'groups': gids})
+            rels = [_uu(x) for (x,) in c.execute('SELECT r.gid FROM f.f_artist_rg ar JOIN f.f_rg g ON g.id = ar.rg '
+                                                 'JOIN f.f_release r ON r.rg = g.id WHERE ar.artist = ? AND g.inlist '
+                                                 'ORDER BY r.gid LIMIT 100', (i,))]
+            res.append({'label': f'{name} ({_uu(g)[:8]}, {ng} groups)', 'mbid': _uu(g), 'key': key, 'groups': gids,
+                        'releases': rels})
     c.close()
     with open(out, 'w', encoding='utf-8') as f:
         json.dump(res, f, ensure_ascii=False)
@@ -1113,6 +1125,35 @@ def _node(script, *args):
     return json.loads(r.stdout.strip().splitlines()[-1])
 
 
+def _spread(xs):
+    """The slowest and the median of a few timings."""
+    s = sorted(xs)
+    return {'max': s[-1], 'median': s[len(s) // 2]}
+
+
+def moments(db, ppath, outdir):
+    """Each named artist's page as ONE request (worker/moments.mjs), with the
+    time Perl takes to inflate and decode each answer (verify/decode_answers.pl)
+    folded in; the answers themselves are deleted after."""
+    m = _node('moments.mjs', db, ppath, outdir)
+    r = subprocess.run(['perl', os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'verify',
+                                             'decode_answers.pl'), outdir], capture_output=True, text=True)
+    if r.returncode:
+        raise SystemExit(f'decode_answers.pl failed:\n{r.stdout}\n{r.stderr}')
+    dec = json.loads(r.stdout.strip().splitlines()[-1])
+    m['perl'], m['json_xs'] = dec['perl'], dec['json_xs']
+    for pg in m['pages']:
+        for v, x in pg.items():
+            if isinstance(x, dict) and 'file' in x:
+                d = dec['files'][os.path.basename(x.pop('file'))]
+                if d['bytes'] != x['bytes']:
+                    raise SystemExit(f"decode_answers.pl read {d['bytes']} bytes of {pg['label']} {v}, not {x['bytes']}")
+                for t in ('decode_ms', 'gunzip_ms'):
+                    x[t] = _spread(d[t])
+    shutil.rmtree(outdir)
+    return m
+
+
 def _bits_job(args):
     """One bucket size of the keyed layout: both files, the delta and its proof,
     the growth, the page reads and the answers. Runs in a worker process."""
@@ -1126,6 +1167,7 @@ def _bits_job(args):
          'over_cap': over, 'fresh': measure(b, gz=True), 'old': measure(a)}
     r['delta'] = delta(a, b, d)
     r['pages'] = _node('pages.mjs', b, ppath)
+    r['moments'] = moments(b, ppath, os.path.join(work, f'moments-keyed{bits}'))
     ans = os.path.join(work, f'answers-keyed{bits}.jsonl')
     r['answers_run'] = _node('answers.mjs', b, qpath, ans)
     r['answers'] = ans
@@ -1170,6 +1212,7 @@ def run(base_a, facts_a, alias_a, base_b, facts_b, alias_b, dsc, work, every=1, 
     h['delta'] = delta(old, new, d)
     os.remove(d)
     h['pages'] = _node('pages.mjs', new, ppath)
+    h['moments'] = moments(new, ppath, os.path.join(work, 'moments-narrow'))
     ans = os.path.join(work, 'answers-hosted.jsonl')
     h['answers_run'] = _node('answers.mjs', new, qpath, ans)
     res['hosted'] = h
@@ -1220,6 +1263,50 @@ def _buckets(bits):
 EXTRA_TABLES = {'rg': 'group lists', 'credit': 'group lists', 'artist_rg': 'group lists',
                 'release': 'whole release map', 'barcode': 'barcodes', 'svc_album': 'album ids',
                 'alias_name': 'alias / old-name keys'}
+
+
+MOMENT_VARIANTS = [('page', 'the page'), ('owned', '+ owned releases'), ('fold_e', '+ eponymous bands'),
+                   ('fold_all', '+ every band (bound)')]
+
+
+def _report_moments(p, labs):
+    """Section 3b: each named page as ONE request (worker/moments.mjs)."""
+    m0 = labs[0][1]['moments']
+    p('\n--- 3b. the page as ONE request (LMS-Discography docs/hosted-pack-plan.md §12): the Worker\'s whole answer, '
+      'built from the file')
+    p('   the answer: the artist read, the same-name list, every collaboration\'s vetting and the extras of every group '
+      'on the file\'s list for him; "+ owned" adds up to 100 of his release ids; "+ eponymous bands" each band marked '
+      'eponymous (read + its groups\' extras); "+ every band" each forward member-of-band link, an upper bound of the '
+      'fold. decode/gunzip: Perl ' + f"{m0.get('perl')} JSON::XS {m0.get('json_xs')}" + ', on this runner, slowest of 5')
+    p(f"   {'page':40} {'variant':22} {'listed':>7} {'extras':>7} {'bands':>6} {'answer':>11} {'gzipped':>11} "
+      f"{'decode':>9} {'gunzip':>8}")
+    differ = []
+    by = [{q['label']: q for q in x['moments']['pages']} for _, x in labs]
+    for q in m0['pages']:
+        for v, what in MOMENT_VARIANTS:
+            x = q[v]
+            if v == 'owned' and not q['owned_ids']:
+                continue
+            p(f"   {q['label'][:40]:40} {what:22} {x['listed']:>7,} {x['extras']:>7,} {x['bands']:>6,} "
+              f"{x['bytes'] / 1e3:>8,.1f} kB {x['gz'] / 1e3:>8,.1f} kB {x['decode_ms']['max']:>7.2f}ms {x['gunzip_ms']['max']:>6.2f}ms")
+            differ += [f"{q['label']} {v} {lab}" for (lab, _), r in zip(labs[1:], by[1:])
+                       if r.get(q['label'], {}).get(v, {}).get('bytes') != x['bytes']]
+    p('   ' + ("every layout's answer is the same size, to the byte (its content: the suite's TestMoments)" if not differ else
+               f"ANSWERS DIFFER BETWEEN LAYOUTS ({len(differ)}): {differ[:5]}"))
+    longway = [f"{q['label']} {v} {lab}" for (lab, _), r in zip(labs, by) for q in r.values()
+               for v, _w in MOMENT_VARIANTS if isinstance(q.get(v), dict) and not q[v].get('same_as_groups', True)]
+    p('   ' + ('every answer\'s extras are what groups(<his list>) gives, in every layout' if not longway else
+               f"EXTRAS DIFFER FROM groups(<his list>) ({len(longway)}): {longway[:5]}"))
+    p('   D1 queries / rows read (a lower bound, as section 3) / ms to build here, per layout, the page and the widest '
+      'variant:')
+    p(f"   {'page':40} {'variant':22} " + ' '.join(f'{lab:>24}' for lab, _ in labs))
+    for q in m0['pages']:
+        for v, what in (('page', 'the page'), ('fold_all', '+ every band (bound)')):
+            cells = []
+            for r in by:
+                x = r.get(q['label'], {}).get(v)
+                cells.append(f"{x['queries']:>6,} {x['rows_read']:>9,} {x['ms']:>7.1f}" if x else f"{'-':>24}")
+            p(f"   {q['label'][:40]:40} {what:22} " + ' '.join(f'{c:>24}' for c in cells))
 
 
 def report(res):
@@ -1304,6 +1391,8 @@ def report(res):
     for what, key, fmt in (('queries, largest page', 'queries', '{:>14,}'), ('bytes read, largest page', 'bytes_read', '{:>14,}'),
                            ('ms, slowest page (Node, this runner)', 'ms', '{:>14.1f}')):
         p(f"   {what:52} " + ' '.join(fmt.format(max((q.get(key, 0) for q in x['pages']['pages']), default=0)) for _, x in labs))
+    if all(x.get('moments') for _, x in labs):
+        _report_moments(p, labs)
 
     p('\n--- 4. per table (dump B): rows / on disk')
     p(', '.join(f"{t} {s_['rows']:,}/{_mb(s_['disk']).strip()}" for t, s_ in sorted(f['tables'].items())))
@@ -1332,7 +1421,8 @@ def report(res):
     p('- D1 counting and space were measured separately on real D1 (2026-11-01, a scratch database, 3,224 rows '
       'written): applied above. Not measured: loading the whole file into D1 (its time, statement and batch limits).')
     p('- Growth over more than one delta: the next runs, one per dump.')
-    p('- The Worker\'s own time and CPU: section 3 times Node on this runner.')
+    p('- The Worker\'s own time and CPU: sections 3 and 3b time Node on this runner, against a local file (no D1 '
+      'round trips; 3b\'s query count is what adds them). Decode times are this runner\'s CPU, not a user\'s server.')
     p(f"\nrun {res.get('started')} -> {res.get('finished')}")
     return '\n'.join(L)
 
@@ -1399,6 +1489,8 @@ def main():
         print(truth(a[1], a[2], a[3], a[4], a[5]))
     elif cmd == 'pages' and len(a) == 4:
         print(pages(a[1], a[2], a[3]))
+    elif cmd == 'moments' and len(a) == 4:
+        print(json.dumps(moments(*a[1:]), ensure_ascii=False, indent=1))
     elif cmd == 'compare' and len(a) == 5:
         res = compare(a[1], a[2], None if a[3] == '-' else a[3], [('hosted', a[4])])
         print(json.dumps(res, ensure_ascii=False, indent=1))
