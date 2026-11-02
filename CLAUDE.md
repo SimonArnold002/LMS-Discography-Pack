@@ -157,3 +157,35 @@ what `make_delta.apply()` does.
   The mirror change and the reasons (mut_hosted4-7.py): 18 more planted, all
   caught after two tests were added (report counts with distinct numbers; the
   title reasons shown).
+
+## The bucket rebuild test (2026-11-02, branch `hosted-test`)
+- Why: a keyed update re-sends every changed bucket WHOLE (20261028 -> 20261101 at
+  16,384 a kind: 53,851 buckets, 476.9 MB gz, run 41350885542). Simon 2026-11-01:
+  "we should look to test for that next", "as long as it doesnt run us over any
+  usage limits in our subscription". So the builder sends only the ENTRIES that
+  changed and the Worker rebuilds each changed bucket in D1.
+- `builder/entry_delta.py make`: per changed bucket its puts (key, value JSON as
+  stored), dels, and the SHA-256 of its CANONICAL text before and after (entries in
+  key order = code points = UTF-8 bytes; `'{' + json key + ':' + value ... '}'`);
+  hash lists of every bucket of A and B; PROVEN (A + the delta read back == B,
+  every bucket, and the meta) before it is kept. `keyed_meta` repeats keyed()'s
+  meta lines so hosted.py stays untouched (the suite holds them equal).
+  `hashes` gives the same list from a KEYED file (the file loaded into D1).
+- `rebuild/patch.mjs`: the Worker's rebuild of one bucket (Web APIs only, so Node
+  runs it too): refuses a bucket that is not the line's before ('before'), a
+  missing del, an after that does not hash right; a bucket already at the after is
+  left alone (a retried batch writes nothing); an emptied bucket = delete the row.
+  It re-serialises every value with JSON.stringify: all 17,747,916 values of the
+  20261028 file come back byte for byte (Node 26, measured 2026-11-02).
+  `rebuild/apply_node.mjs` applies a delta to a keyed file copy with it.
+- `.github/workflows/entry-delta.yml`: dumps PINNED (A 20261028-002228, the file
+  the Mac loads into D1; B 20261101-125824), its own concurrency group, triggered
+  only by its own files (so a push does not start the hosted test). Commits
+  `reports/edelta-<B>-run<id>.txt`; artifact `edelta-<B>` (delta, hash lists,
+  Node's result). MusicBrainz keeps two dumps: once a newer one is out, the pinned
+  A is gone.
+- The Cloudflare half runs from the Mac (session scratchpad, ids local only).
+- Tests: tests/test_entry_delta.py, 12 (three of them the edges: a new bucket, an
+  emptied one, a deleted entry, made on a copy of version 2's entries); mutants 16 of 16
+  caught, one equivalent control survived (session scratchpad
+  rebuild/mut_edelta.py). 80 in the whole suite.
