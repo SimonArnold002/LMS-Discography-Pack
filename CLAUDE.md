@@ -189,3 +189,8 @@ what `make_delta.apply()` does.
   emptied one, a deleted entry, made on a copy of version 2's entries); mutants 16 of 16
   caught, one equivalent control survived (session scratchpad
   rebuild/mut_edelta.py). 80 in the whole suite.
+- RESULTS 2026-11-02: runner run 41428172063 (report reports/edelta-20261101-125824-run41428172063.txt): the
+  delta 26.2 MB gz (63.9 plain) against 476.9 MB re-sending whole buckets; proven; Node rebuild SAME. On
+  Cloudflare (from the Mac, Simon's "yes"): 53,847 buckets rebuilt in D1 in 213 s, 0 refused, every one read
+  back == B; CPU 159,079 ms from Workers Logs (2.95 ms a bucket); D1 shrank 1,255 -> 1,239 MB. Full figures:
+  LMS-Discography docs/hosted-pack-plan.md §11, end.
