@@ -38,6 +38,10 @@ Sub-commands:
   same <hash list> <hash list>
       SAME, or the differences (meta lines ignored); a plain .tsv is Node's
       (rebuild/apply_node.mjs), a .tsv.gz this module's. Exits 1 on a difference.
+  parts <edelta .jsonl.gz> <out dir> <lines a part> <dump A> <dump B>
+      the delta split for a Worker that applies it by itself, one part a scheduled
+      run (rebuild/updater.mjs): shuffled gzipped parts and edelta-<B>.json, the
+      manifest (dumps, the meta line, each part's lines, bytes, SHA-256).
   report <edelta-<bits>.json> [<rebuild/apply_node.mjs's JSON>]
       the readable report.
 """
@@ -259,6 +263,39 @@ def keyed_hashes(keyed_db, out):
     return n
 
 
+def parts(dpath, outdir, per_part, dump_a, dump_b, seed=1):
+    """The delta as a Worker applies it BY ITSELF (rebuild/updater.mjs, one part a scheduled run): the bucket
+    lines shuffled (seed fixed: lst lines are the big ones, so each part then costs about the same) into gzipped
+    parts of per_part lines, and a manifest: the dumps it goes from and to, the meta line
+    (applied last, so the database names the new dump only once every bucket is in), and each part's name,
+    lines, bytes and SHA-256. Returns the manifest."""
+    import random
+    os.makedirs(outdir, exist_ok=True)
+    with gzip.open(dpath, 'rt', encoding='utf-8') as f:
+        raw = [x.rstrip('\n') for x in f if x.strip()]     # kept as written: never dumped again
+    meta = json.loads(raw.pop(0))
+    if meta.get('t') != 'meta':
+        raise SystemExit('the delta does not start with its meta line')
+    lines = raw
+    random.Random(seed).shuffle(lines)
+    man = {'format': 'edelta-1', 'from': dump_a, 'to': dump_b, 'buckets': len(lines),
+           'meta': {'put': meta['put'], 'del': meta['del']}, 'parts': []}
+    for i in range(0, len(lines), per_part):
+        name = f'edelta-{dump_b}-{len(man["parts"]) + 1:03d}.jsonl.gz'
+        path = os.path.join(outdir, name)
+        chunk = lines[i:i + per_part]
+        # mtime 0: the same lines give the same bytes
+        with open(path, 'wb') as fh, gzip.GzipFile(fileobj=fh, mode='wb', compresslevel=9, mtime=0) as f:
+            f.write(''.join(x + '\n' for x in chunk).encode('utf-8'))
+        with open(path, 'rb') as f:
+            data = f.read()
+        man['parts'].append({'name': name, 'lines': len(chunk), 'bytes': len(data),
+                             'sha256': hashlib.sha256(data).hexdigest()})
+    with open(os.path.join(outdir, f'edelta-{dump_b}.json'), 'w') as f:
+        json.dump(man, f, ensure_ascii=False, indent=1)
+    return man
+
+
 def _mb(n):
     return f'{n / 1e6:,.1f} MB'
 
@@ -309,6 +346,9 @@ def main():
         bad = sorted(set(x.items()) ^ set(y.items()))
         print('SAME' if not bad else f'DIFFERENT: {len(bad)} entries, e.g. {bad[:4]}')
         sys.exit(1 if bad else 0)
+    elif a[:1] == ['parts'] and len(a) == 6:
+        m = parts(a[1], a[2], int(a[3]), a[4], a[5])
+        print(json.dumps({k: v for k, v in m.items() if k != 'meta'}, indent=1))
     elif a[:1] == ['report'] and len(a) in (2, 3):
         res = json.load(open(a[1]))
         print(report(res, json.load(open(a[2])) if len(a) == 3 else None))

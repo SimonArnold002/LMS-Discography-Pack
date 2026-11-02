@@ -170,7 +170,7 @@ class TestRebuild(EntryDelta):
         self.assertEqual(got['hash'], entry_delta.digest(entry_delta.canon(pairs)))
 
 
-class TestEdges(EntryDelta):
+class Edges(EntryDelta):
     """What the made-up dump's two versions never do, made on a copy of version 2's entries: a bucket
     that appears (an entry in a bucket A lacks), a bucket that empties (every entry of an A bucket
     gone) and an entry deleted from a bucket that keeps others."""
@@ -210,6 +210,9 @@ class TestEdges(EntryDelta):
     def line(self, kb):
         return next(x for x in lines(self.delta3)[1:] if (x['t'], x['b']) == kb)
 
+
+class TestEdges(Edges):
+
     def test_each_edge_is_in_the_delta_and_proven(self):
         k = self.res3['kinds']
         self.assertGreaterEqual(sum(x['new'] for x in k.values()), 1)
@@ -244,6 +247,151 @@ class TestEdges(EntryDelta):
         key = lambda kb: kb[1].to_bytes(4, 'big')
         self.assertEqual(q(cp, f'SELECT count(*) FROM {self.emptied[0]} WHERE k = ?', key(self.emptied))[0][0], 0)
         self.assertEqual(q(cp, f'SELECT count(*) FROM svc WHERE k = ?', key(self.new[0]))[0][0], 1)
+
+
+class TestParts(Edges):
+    """The delta split for a Worker that applies it by itself (entry_delta.parts)."""
+    def test_parts_hold_every_line_once_with_their_sizes_and_hashes(self):
+        out = self.path('parts-a')
+        man = entry_delta.parts(self.delta3, out, 2, 'A', 'B')
+        with gzip.open(self.delta3, 'rt', encoding='utf-8') as f:
+            raw = [x.rstrip('\n') for x in f if x.strip()]
+        got = []
+        for p in man['parts']:
+            with open(os.path.join(out, p['name']), 'rb') as f:
+                data = f.read()
+            self.assertEqual((p['bytes'], p['sha256']), (len(data), __import__('hashlib').sha256(data).hexdigest()))
+            ls = gzip.decompress(data).decode('utf-8').splitlines()
+            self.assertEqual(p['lines'], len(ls))
+            self.assertLessEqual(len(ls), 2)
+            got += ls
+        self.assertEqual(sorted(got), sorted(raw[1:]))            # every bucket line once, as written
+        self.assertEqual(man['meta'], {k: json.loads(raw[0])[k] for k in ('put', 'del')})
+        self.assertEqual((man['from'], man['to'], man['buckets']), ('A', 'B', len(raw) - 1))
+        with open(os.path.join(out, 'edelta-B.json')) as f:
+            self.assertEqual(json.load(f), man)
+        self.assertNotEqual(got, raw[1:])                         # shuffled (seed 1), not the delta's order
+        # The same delta gives the same bytes, a second later too (a gzip header carries a time).
+        __import__('time').sleep(1.1)
+        again = entry_delta.parts(self.delta3, self.path('parts-b'), 2, 'A', 'B')
+        self.assertEqual([p['sha256'] for p in again['parts']], [p['sha256'] for p in man['parts']])
+
+
+@unittest.skipUnless(NODE, 'needs Node 22.5+ (node:sqlite)')
+class TestUpdater(Edges):
+    """rebuild/updater.mjs, one scheduled run at a time (rebuild/tick_node.mjs), on a copy of A's keyed file,
+    the parts read from a folder as from the release."""
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.dumps = [entry_delta.keyed_meta(cls.f[v]['hosted'], BITS)['dump'] for v in (1, 2)]
+        cls.rel = os.path.join(cls.tmp, 'release')
+        cls.man = entry_delta.parts(cls.delta3, cls.rel, 2, *cls.dumps)
+        cls.mname = f'edelta-{cls.dumps[1]}.json'
+        cls.want = entry_delta.read_hashes(os.path.join(cls.out3, f'bhash-{BITS}.tsv.gz'))
+        cls.start = entry_delta.read_hashes(os.path.join(cls.out3, f'ahash-{BITS}.tsv.gz'))
+
+    def ticks(self, base, max_runs=100, rel=None, **env):
+        cp = self.path(f'upd-{len(os.listdir(self.tmp))}.db')
+        shutil.copyfile(base, cp)
+        p = subprocess.run([NODE, os.path.join(REBUILD, 'tick_node.mjs'), cp, rel or self.rel, self.mname, str(max_runs)],
+                           capture_output=True, text=True, env=dict(os.environ, **{k: str(v) for k, v in env.items()}))
+        if p.returncode:
+            self.fail(p.stderr)
+        return [json.loads(x) for x in p.stdout.splitlines()], cp
+
+    def hashes(self, db):
+        h = self.path(f'h-{len(os.listdir(self.tmp))}.tsv.gz')
+        entry_delta.keyed_hashes(db, h)
+        return entry_delta.read_hashes(h)
+
+    def test_runs_part_by_part_then_names_the_new_dump(self):
+        rs, db = self.ticks(self.key[1])
+        n = len(self.man['parts'])
+        self.assertGreater(n, 1)
+        self.assertEqual([r['state'] for r in rs], ['part'] * n + ['done', 'current'])
+        self.assertEqual([r['part'] for r in rs[:n]], list(range(1, n + 1)))
+        self.assertEqual(self.hashes(db), self.want)             # every bucket and the meta are B's
+        self.assertEqual(q(db, "SELECT k, v FROM upd ORDER BY k"), [('lease', '0')])
+        self.assertEqual(sum(r['written'] + r['deleted'] for r in rs[:n]), self.res3['buckets_changed'])
+
+    def test_the_meta_waits_for_every_part(self):
+        n = len(self.man['parts'])
+        rs, db = self.ticks(self.key[1], max_runs=n)
+        self.assertEqual([r['state'] for r in rs], ['part'] * n)
+        self.assertEqual(q(db, "SELECT value FROM meta WHERE key = 'dump'"), [(self.dumps[0],)])
+        got = self.hashes(db)
+        self.assertNotEqual(got.pop(('meta', 0)), self.want[('meta', 0)])
+        self.assertEqual(got, {k: v for k, v in self.want.items() if k != ('meta', 0)})
+
+    def test_a_run_cut_off_part_way_is_done_again(self):
+        rs, db = self.ticks(self.key[1], PER_BATCH=1, FAIL_BATCH=2)
+        self.assertEqual(rs[0]['state'], 'threw')
+        self.assertEqual(rs[1]['state'], 'part')
+        self.assertEqual((rs[1]['part'], rs[1]['already']), (1, 1))     # its first bucket was in before the cut
+        self.assertEqual([r['state'] for r in rs[-2:]], ['done', 'current'])
+        self.assertEqual(self.hashes(db), self.want)
+
+    def test_a_damaged_part_is_fetched_again_and_nothing_is_written(self):
+        rel = self.path('release-damaged')
+        shutil.copytree(self.rel, rel)
+        p2 = os.path.join(rel, self.man['parts'][1]['name'])
+        with open(p2, 'rb') as f:
+            good = f.read()
+        with open(p2, 'wb') as f:
+            f.write(good[:-1] + bytes([good[-1] ^ 1]))
+        rs, db = self.ticks(self.key[1], max_runs=3, rel=rel)
+        self.assertEqual([r['state'] for r in rs], ['part', 'part damaged', 'part damaged'])
+        self.assertEqual(q(db, "SELECT v FROM upd WHERE k = 'run'"), [(json.dumps({'from': self.dumps[0], 'to': self.dumps[1], 'part': 1}, separators=(',', ':')),)])
+        # The damaged part's buckets are untouched.
+        with gzip.open(p2.replace(rel, self.rel), 'rt') as f:
+            in2 = {(x['t'], x['b']) for x in map(json.loads, f)}
+        got = self.hashes(db)
+        for kb in in2:
+            self.assertEqual(got.get(kb), self.start.get(kb), kb)
+        with open(p2, 'wb') as f:                                  # the part is right again: the next runs finish
+            f.write(good)
+        rs2, db2 = self.ticks(db, rel=rel)
+        self.assertEqual([r['state'] for r in rs2][-2:], ['done', 'current'])
+        self.assertEqual(self.hashes(db2), self.want)
+
+    def test_a_held_lease_does_nothing(self):
+        rs, db = self.ticks(self.key[1], LEASE_HELD=1)
+        self.assertEqual([r['state'] for r in rs], ['busy'])
+        self.assertEqual(self.hashes(db), self.start)
+
+    def test_another_dump_has_no_path(self):
+        base = self.path('other-dump.db')
+        shutil.copyfile(self.key[1], base)
+        c = sqlite3.connect(base)
+        c.execute("UPDATE meta SET value = '20250101-000000' WHERE key = 'dump'")
+        c.commit()
+        c.close()
+        rs, db = self.ticks(base)
+        self.assertEqual([r['state'] for r in rs], ['no path'])
+        self.assertEqual({k: v for k, v in self.hashes(db).items() if k != ('meta', 0)},
+                         {k: v for k, v in self.start.items() if k != ('meta', 0)})
+
+    def test_a_bucket_that_is_not_its_lines_before_stops_the_update(self):
+        x = next(json.loads(l) for p in self.man['parts'] for l in gzip.open(os.path.join(self.rel, p['name']), 'rt')
+                 if json.loads(l)['ha'] and json.loads(l)['put'])
+        base = self.path('altered-upd.db')
+        shutil.copyfile(self.key[1], base)
+        c = sqlite3.connect(base)
+        import zlib
+        (v,) = c.execute(f'SELECT v FROM {x["t"]} WHERE k = ?', (x['b'].to_bytes(4, 'big'),)).fetchone()
+        d = json.loads(zlib.decompress(v, -15))
+        d[next(iter(d))] = ['altered']
+        c.execute(f'UPDATE {x["t"]} SET v = ? WHERE k = ?', (hosted._deflate(hosted.jdump(d).encode()), x['b'].to_bytes(4, 'big')))
+        c.commit()
+        c.close()
+        rs, db = self.ticks(base)
+        self.assertEqual(rs[-1]['state'], 'stopped')
+        self.assertIn(f'"{x["t"]}",{x["b"]},"before"', rs[-1]['error'])
+        self.assertEqual(q(db, "SELECT value FROM meta WHERE key = 'dump'"), [(self.dumps[0],)])
+        rs2, _ = self.ticks(db)
+        self.assertEqual([r['state'] for r in rs2], ['stopped'])          # it stays stopped,
+        self.assertNotIn('n', rs2[0])                                     # without trying the part again
 
 
 if __name__ == '__main__':

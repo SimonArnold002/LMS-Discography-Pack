@@ -1,0 +1,73 @@
+# THE SELF-APPLYING UPDATE TEST (LMS-Discography docs/hosted-pack-plan.md §11, end; Simon 2026-11-02: "yes" to the
+# Worker fetching the update file from a GitHub release and applying it in scheduled chunks by itself). Puts an
+# entry delta (the artifact of an entry-delta run) on a TEST pre-release, laid out as the Worker fetches it:
+# builder/entry_delta.py parts = the bucket lines shuffled into gzipped parts + edelta-<B>.json, the manifest.
+# Tag hosted-test-edelta-<B>: never pack-*, so the monthly prune (release.py prune_plan) and the plugin
+# (PackUpdate.pm reads manifest-v3.json on main) never see it; a pre-release, never "latest". Run again, it replaces
+# the files. Touches nothing else: no manifest, main untouched, Cloudflare not touched.
+name: Entry delta release (self-applying update test)
+
+on:
+  push:
+    branches: [hosted-test]
+    paths:
+      - .github/workflows/edelta-release.yml
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'the entry-delta run whose artifact is published'
+        default: '41428172063'
+      a:
+        description: 'dump A'
+        default: '20261028-002228'
+      b:
+        description: 'dump B'
+        default: '20261101-125824'
+      per_part:
+        description: 'bucket lines a part (one part a scheduled run)'
+        default: '4000'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: edelta-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      RUN_ID: ${{ inputs.run_id || '41428172063' }}
+      A: ${{ inputs.a || '20261028-002228' }}
+      B: ${{ inputs.b || '20261101-125824' }}
+      PER: ${{ inputs.per_part || '4000' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The entry-delta run's artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: edelta-${{ env.B }}
+          path: art
+          run-id: ${{ env.RUN_ID }}
+          github-token: ${{ github.token }}
+
+      - name: The parts and their manifest
+        run: |
+          python3 -I builder/entry_delta.py parts art/edelta-14.jsonl.gz rel "$PER" "$A" "$B"
+          ls -l rel
+
+      - name: The test pre-release
+        run: |
+          tag="hosted-test-edelta-$B"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release upload "$tag" rel/* --clobber
+          else
+            gh release create "$tag" rel/* --target hosted-test --prerelease --latest=false \
+              --title "Hosted pack test: entry delta $A -> $B" \
+              --notes "TEST ONLY (the hosted pack's self-applying update, LMS-Discography docs/hosted-pack-plan.md). Not a pack: Discography never reads it. From entry-delta run $RUN_ID."
+          fi
+          gh release view "$tag" --json assets --jq '.assets[] | "\(.name) \(.size)"'

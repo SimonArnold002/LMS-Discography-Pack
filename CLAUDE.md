@@ -180,7 +180,8 @@ what `make_delta.apply()` does.
   `rebuild/apply_node.mjs` applies a delta to a keyed file copy with it.
 - `.github/workflows/entry-delta.yml`: dumps PINNED (A 20261028-002228, the file
   the Mac loads into D1; B 20261101-125824), its own concurrency group, triggered
-  only by its own files (so a push does not start the hosted test). Commits
+  only by its own files (so a push does not start the hosted test); by hand only since
+  its run 41428172063. Commits
   `reports/edelta-<B>-run<id>.txt`; artifact `edelta-<B>` (delta, hash lists,
   Node's result). MusicBrainz keeps two dumps: once a newer one is out, the pinned
   A is gone.
@@ -194,3 +195,23 @@ what `make_delta.apply()` does.
   Cloudflare (from the Mac, Simon's "yes"): 53,847 buckets rebuilt in D1 in 213 s, 0 refused, every one read
   back == B; CPU 159,079 ms from Workers Logs (2.95 ms a bucket); D1 shrank 1,255 -> 1,239 MB. Full figures:
   LMS-Discography docs/hosted-pack-plan.md §11, end.
+
+## The self-applying update test (2026-11-02, branch `hosted-test`)
+- Simon 2026-11-02 "yes": the Worker fetches the update from a GitHub release and applies it in scheduled chunks BY
+  ITSELF (the last untested part of the hosted update path).
+- `builder/entry_delta.py parts`: the delta's bucket lines shuffled (seed 1, so each part costs about the same) into
+  gzipped parts (mtime 0: same lines, same bytes) + `edelta-<B>.json`, the manifest (from/to dumps, the meta line, each
+  part's lines, bytes, SHA-256).
+- `rebuild/updater.mjs` `tick(env)`: one scheduled run. No `dump` in meta = no database yet (a load writes its meta
+  LAST). A lease (table `upd`, row 'lease', one conditional upsert) = one run at a time. Manifest from == dump: the
+  next part (its place in `upd` 'run'), size + SHA-256 + lines checked (else fetched again next run, nothing
+  written), applied PER_BATCH (50) buckets a D1 batch; a run cut off is redone (a rebuilt bucket is "already"); a
+  refused bucket STOPS the update for good (`run.error`); every part in -> the meta line + the 'run' row's delete in
+  one batch, so the dump changes only once all of it is there; dump == to -> 'current'. `rebuild/node-d1w.mjs` (a
+  read-write D1 over node:sqlite, `failBatch` to cut a run off) and `rebuild/tick_node.mjs` run it in the suite.
+- `.github/workflows/edelta-release.yml`: an entry-delta run's artifact as a TEST pre-release, tag
+  `hosted-test-edelta-<B>` (never `pack-*`: the monthly prune and the plugin never see it), never "latest".
+- Tests: TestParts (1), TestUpdater (7: part by part then the new dump, the meta waits for every part, a run cut off
+  part-way, a damaged part fetched again with nothing written, a held lease, another dump, a wrong bucket stops it
+  for good); 88 in the whole suite; mutants 15 of 15 (session scratchpad rebuild/mut_updater.py). Run in the local
+  Workers simulator too (parts served over local HTTP): every bucket and the meta == B; /stop holds.

@@ -14,14 +14,9 @@
 # artifact. Publishes nothing; Cloudflare is not touched here.
 name: Entry delta (bucket rebuild test)
 
+# Run by hand only since its run 41428172063 (2026-11-02): a push of the self-applying update's files must not
+# rebuild both dumps again.
 on:
-  push:
-    branches: [hosted-test]
-    paths:
-      - .github/workflows/entry-delta.yml
-      - builder/entry_delta.py
-      - rebuild/**
-      - tests/test_entry_delta.py
   workflow_dispatch:
     inputs:
       a:
