@@ -1,0 +1,22 @@
+Entry delta test (bucket rebuild), run 41428172063, commit 9d310304c8e8d6ddb764f2c7a2449dce32dcca02, dumps 20261028-002228 -> 20261101-125824
+--- the update as changed entries, 16,384 buckets a kind (builder/entry_delta.py make)
+buckets changed 53,847 of 131,072 in B (new 0, emptied 0); meta keys put 4, deleted 0
+entries: new 43,835, changed 28,556, deleted 565
+the delta: 63.9 MB plain, 26.2 MB gzipped; the changed buckets as keyed() writes them: 471.7 MB
+PROVEN: A + the delta read back from its file == B, all 131,072 buckets (53,847 rebuilt) and the meta
+
+kind  buckets changed   of B      entries new  changed  deleted   delta plain   keyed bytes of them
+art             7,980  16,384            2,980    7,843       33        3.8 MB             72.1 MB
+lst             7,184  16,384            1,958    7,402       58       48.0 MB            131.8 MB
+grp             1,906  16,384            1,300      602      130        0.6 MB              3.7 MB
+nam             6,881  16,384            2,498    6,342       87        2.9 MB             42.5 MB
+ali             5,414  16,384            1,097    5,403       54        1.6 MB              7.8 MB
+rel             9,014  16,384           12,323      570      182        2.8 MB            128.1 MB
+bar             5,451  16,384            6,450      185        5        1.4 MB             24.6 MB
+svc            10,017  16,384           15,229      209       16        2.8 MB             61.2 MB
+
+--- Node rebuilding a copy of A's keyed file with rebuild/patch.mjs, as the Worker will
+lines 53,847: written 53,847, deleted 0, already done 0, REFUSED 0
+every bucket of the result hashed against B's list: SAME
+bytes read 469.5 MB, written 452.9 MB (Node's deflate; keyed() writes the same buckets in 471.7 MB)
+Node's CPU for it 62.6 s, wall 55.8 s (node:sqlite reads and writes included; a preview, never the Worker's figure)
