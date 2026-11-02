@@ -76,12 +76,12 @@ export async function applyLines(db, lines, st, perBatch = PER_BATCH) {
     return res;
 }
 
-async function first(db, sql, ...args) {
+export async function first(db, sql, ...args) {
     const r = await db.prepare(sql).bind(...args).all();
     return (r.results && r.results[0]) || null;
 }
 
-async function sha256Bytes(b) {
+export async function sha256Bytes(b) {
     const d = new Uint8Array(await crypto.subtle.digest('SHA-256', b));
     let s = '';
     for (const x of d) s += x.toString(16).padStart(2, '0');

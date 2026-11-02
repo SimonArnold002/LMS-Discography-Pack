@@ -1,0 +1,127 @@
+# THE SPARE-COPY LOAD TEST (LMS-Discography docs/hosted-pack-plan.md §11, end). Simon, 2026-11-02: keep two copies only
+# during an update, the old one serving until the new one is complete, then switch over and empty the old one; "yes" to
+# loading the spare WHOLE from the new dump's file and to this test. Builds dump B's KEYED file as the hosted test does,
+# holds it to the bucket rebuild test's list of B (the artifact of entry-delta run 41428172063: every bucket the same
+# content), then builder/load_parts.py lays it out as the Worker loads it BY ITSELF (rebuild/loader.mjs) and puts it on
+# the TEST pre-release hosted-test-load-<B>: never pack-*, so the monthly prune (release.py prune_plan) and the plugin
+# (PackUpdate.pm reads manifest-v3.json on main) never see it; a pre-release, never "latest". Run again, it replaces
+# the files. Touches nothing else: no manifest, main untouched, Cloudflare not touched.
+name: Load release (spare-copy load test)
+
+on:
+  push:
+    branches: [hosted-test]
+    paths:
+      - .github/workflows/load-release.yml
+  workflow_dispatch:
+    inputs:
+      b:
+        description: 'the dump built and published'
+        default: '20261101-125824'
+      bits:
+        description: 'buckets a kind, as a power of two'
+        default: '14'
+      mb_part:
+        description: 'MB a part (the Worker loads a few parts a scheduled run)'
+        default: '32'
+      edelta_run:
+        description: 'the entry-delta run whose list of B the file is held to'
+        default: '41428172063'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: load-release
+  cancel-in-progress: false
+
+jobs:
+  load-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      DSC_REF: ${{ vars.DSC_REF || 'dev' }}
+      B: ${{ inputs.b || '20261101-125824' }}
+      BITS: ${{ inputs.bits || '14' }}
+      MB: ${{ inputs.mb_part || '32' }}
+      RUN_ID: ${{ inputs.edelta_run || '41428172063' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: LMS-Discography's Sources.pm (the name keys of today's pack)
+        uses: actions/checkout@v4
+        with:
+          repository: SimonArnold002/LMS-Discography
+          ref: ${{ env.DSC_REF }}
+          path: dsc
+          sparse-checkout: Discography/Sources.pm
+          sparse-checkout-cone-mode: false
+
+      - name: The plugin code the suite runs (Sources.pm from DSC_REF, Pack.pm the copy in verify/plugin)
+        run: |
+          mkdir -p dscp/Discography
+          cp dsc/Discography/Sources.pm dscp/Discography/
+          cp verify/plugin/Pack.pm dscp/Discography/
+          md5sum dscp/Discography/*.pm
+
+      - name: Disk space and tools
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get update -qq && sudo apt-get install -y -qq lbzip2 libdbi-perl libdbd-sqlite3-perl libjson-xs-perl
+          node -e "require('node:sqlite'); console.log('node', process.version, 'node:sqlite ok')"
+          df -h . && free -g && nproc
+
+      - name: Tests (the made-up dump; nothing is built if they fail)
+        run: DSC_DIR="$PWD/dscp" python3 -m unittest discover -s tests -v
+
+      - name: Dump B - fetch, today's pack, the candidate tables, the alias keys, the hosted file, its entries, keyed
+        run: |
+          mkdir -p out
+          python3 -I builder/measure_extra.py fetch "$B" work
+          python3 -I builder/build_pack.py work out/base-B.db --dsc "$PWD/dsc" --dump "$B"
+          python3 -I builder/measure_extra.py facts work out/facts-B.db > /dev/null
+          python3 -I builder/hosted.py aliases out/base-B.db "$PWD/dsc" out/aliases-B.tsv
+          rm -rf work
+          python3 -I builder/hosted.py narrow out/base-B.db out/facts-B.db out/aliases-B.tsv out/hosted-B.db
+          python3 -I builder/hosted.py entries out/hosted-B.db out/entries-B.db
+          rm -f out/base-B.db out/facts-B.db out/aliases-B.tsv
+          python3 -I builder/hosted.py keyed out/entries-B.db out/hosted-B.db "$BITS" out/keyed-B.db > /dev/null
+          ls -l out
+          df -h .
+
+      - name: The bucket rebuild test's list of B
+        uses: actions/download-artifact@v4
+        with:
+          name: edelta-${{ env.B }}
+          path: art
+          run-id: ${{ env.RUN_ID }}
+          github-token: ${{ github.token }}
+
+      - name: The file held to that list (every bucket the same content; the meta differs only in when it was built)
+        run: |
+          python3 -I builder/entry_delta.py hashes out/keyed-B.db out/keyed-B-hashes.tsv.gz
+          python3 -I builder/entry_delta.py same out/keyed-B-hashes.tsv.gz "art/bhash-$BITS.tsv.gz"
+
+      - name: The parts and their manifest
+        run: |
+          python3 -I builder/load_parts.py parts out/keyed-B.db rel "$MB"
+          ls -l rel | tail -5
+          du -sh rel
+
+      - name: The test pre-release
+        run: |
+          tag="hosted-test-load-$B"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release upload "$tag" rel/* --clobber
+          else
+            gh release create "$tag" rel/* --target hosted-test --prerelease --latest=false \
+              --title "Hosted pack test: whole file $B" \
+              --notes "TEST ONLY (the hosted pack's spare-copy load, LMS-Discography docs/hosted-pack-plan.md). Not a pack: Discography never reads it. Held to entry-delta run $RUN_ID's list of B."
+          fi
+          gh release view "$tag" --json assets --jq '[.assets[] | .size] | "\(length) files, \(add) bytes"'

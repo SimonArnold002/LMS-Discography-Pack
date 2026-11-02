@@ -222,3 +222,27 @@ what `make_delta.apply()` does.
   moves fetch handlers only, so the cron runs far from D1 (location unmeasured; Workers Logs has none for a scheduled
   event). A cron trigger needs the account's workers.dev subdomain even on a custom domain. Full figures and the two
   fixes to measure (work next to D1, fewer trips): LMS-Discography docs/hosted-pack-plan.md §11, end.
+
+## The spare-copy load test (2026-11-02, branch `hosted-test`)
+- Why: the self-applying update left readers on a MIXED database for its whole run (44 minutes). Simon 2026-11-02: keep
+  two copies only during an update, the old one serving until the new one is complete, then switch over and empty the
+  old one; "yes" to loading the spare WHOLE from the new dump's file (no delta) and to this test.
+- `builder/load_parts.py parts <keyed file> <out dir> <MB a part>`: binary records [1-byte kind index][4-byte key]
+  [4-byte length][value], kinds in KINDS order, keys in order, cut at a record once a part reaches its size (same file,
+  same bytes); `load-<dump>.json`: format `load-1`, dump, kinds, rows per table, the meta rows, each part's records,
+  bytes, SHA-256. Refuses a file not keyed by 4-byte buckets or holding other tables.
+- `rebuild/loader.mjs` `tick(env)` (env DB1, DB2, MANIFEST_URL): the copy that SERVES is the newest COMPLETE one (meta
+  names a dump; the meta goes in last). A manifest newer than the serving dump: the other copy (DB1 when none serves) is
+  dropped and recreated, then PARTS_PER_RUN (2) parts a run, upserts, BATCH_BYTES (3 MB) a D1 batch; a damaged part is
+  fetched again next run; a part or table short of its rows STOPS the load before the meta; when every table holds the
+  manifest's rows, the meta (= the switch). The copy that served before is emptied (meta first, then the tables)
+  EMPTY_AFTER_MS (5 min) after the switch; readers keep their choice READ_CACHE_MS (30 s). The loader's rows (lease,
+  'run', 'old') live in DB1's `upd`, never dropped. A switch cut off after its meta is finished by the next run; a load
+  given up (the manifest back at the serving dump) has its half-loaded copy emptied. `serving(env)` is the reader's pick.
+- `.github/workflows/load-release.yml`: builds dump B's keyed file, holds it to entry-delta run 41428172063's list of B
+  (`entry_delta.py same`: every bucket the same content), lays it out in 32 MB parts and publishes the TEST pre-release
+  `hosted-test-load-<B>` (never `pack-*`, never "latest"). Triggered by its own file only.
+- Tests: tests/test_load_parts.py, 16 (TestLoadParts 3, TestLoader 13 through `rebuild/tick_load_node.mjs`); 104 in the
+  suite; planted bugs 28 of 28 caught (session scratchpad rebuild/mut_loader.py). Run in the local Workers simulator
+  too: the old copy served until the switch, the reader moved over after its 30 s, the old copy emptied, every bucket
+  and the meta == B. The Cloudflare half runs from the Mac (session scratchpad `rebuild/run_load.sh`).
