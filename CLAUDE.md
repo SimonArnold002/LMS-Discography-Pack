@@ -215,3 +215,10 @@ what `make_delta.apply()` does.
   part-way, a damaged part fetched again with nothing written, a held lease, another dump, a wrong bucket stops it
   for good); 88 in the whole suite; mutants 15 of 15 (session scratchpad rebuild/mut_updater.py). Run in the local
   Workers simulator too (parts served over local HTTP): every bucket and the meta == B; /stop holds.
+- RESULTS 2026-11-02 (pushed 2596b71; release run 41464609782, the pre-release's 15 files == a local `parts` rebuild
+  byte for byte): on Cloudflare the Worker's OWN cron runs fetched and applied all 14 parts, 53,847 buckets, 0 refused,
+  every one read back == B, meta == B. CPU 129,847 ms from Workers Logs (2.41 ms a bucket, 0.43% of the month an
+  update); busiest run 15,876 ms of the cron's 30 s. About 44 minutes, parts 45-306 s each for the same work: placement
+  moves fetch handlers only, so the cron runs far from D1 (location unmeasured; Workers Logs has none for a scheduled
+  event). A cron trigger needs the account's workers.dev subdomain even on a custom domain. Full figures and the two
+  fixes to measure (work next to D1, fewer trips): LMS-Discography docs/hosted-pack-plan.md §11, end.
