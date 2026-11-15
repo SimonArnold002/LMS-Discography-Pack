@@ -1,0 +1,126 @@
+# Builds one MusicBrainz dump into the keyed data file, cuts it into parts with a manifest, and publishes them as the
+# release data-<dump>. Started by hand. Nothing here reads or writes anything but MusicBrainz's dump and this repo.
+name: Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      dump:
+        description: 'fullexport dump name (blank = the newest)'
+        default: ''
+      force:
+        description: 'Build even if this dump is already published'
+        type: boolean
+        default: false
+      bits:
+        description: 'buckets a kind, as a power of two'
+        default: '14'
+      mb_part:
+        description: 'MB a part'
+        default: '32'
+      keep:
+        description: 'Releases to keep (the newest ones; older are deleted after a build)'
+        default: '2'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      DSC_REF: ${{ vars.DSC_REF || 'dev' }}
+      BITS: ${{ inputs.bits || '14' }}
+      MB: ${{ inputs.mb_part || '32' }}
+      KEEP: ${{ inputs.keep || '2' }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4, read 2026-11-13
+
+      - name: LMS-Discography's Sources.pm (the name keys)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4, read 2026-11-13
+        with:
+          repository: SimonArnold002/LMS-Discography
+          ref: ${{ env.DSC_REF }}
+          path: dsc
+          sparse-checkout: Discography/Sources.pm
+          sparse-checkout-cone-mode: false
+
+      - name: Disk space and tools
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get update -qq && sudo apt-get install -y -qq lbzip2
+          md5sum dsc/Discography/Sources.pm
+          df -h . && free -g && nproc
+
+      - name: Tests (the made-up dump; nothing is built if they fail)
+        run: DSC_DIR="$PWD/dsc" python3 -m unittest discover -s tests -v
+
+      - name: Which dump
+        id: which
+        run: |
+          B="${{ inputs.dump }}"
+          [ -n "$B" ] || B=$(python3 -I builder/fetch_dump.py latest)
+          case "$B" in *[!0-9-]*|'') echo "not a dump name: $B"; exit 1 ;; esac
+          echo "B=$B" >> "$GITHUB_ENV"
+          if gh release view "data-$B" > /dev/null 2>&1 && [ "${{ inputs.force }}" != "true" ]; then
+            echo "data-$B is already published"
+            echo "build=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=yes" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Fetch, the tables, the records, the keyed file
+        if: steps.which.outputs.build == 'yes'
+        run: |
+          mkdir -p out
+          python3 -I builder/measure_extra.py fetch "$B" work
+          python3 -I builder/build_pack.py work out/base.db --dsc "$PWD/dsc" --dump "$B"
+          python3 -I builder/measure_extra.py facts work out/facts.db > /dev/null
+          python3 -I builder/keyed.py aliases out/base.db "$PWD/dsc" out/aliases.tsv
+          rm -rf work
+          python3 -I builder/keyed.py narrow out/base.db out/facts.db out/aliases.tsv out/tables.db
+          python3 -I builder/keyed.py entries out/tables.db out/entries.db
+          rm -f out/base.db out/facts.db out/aliases.tsv
+          python3 -I builder/keyed.py keyed out/entries.db out/tables.db "$BITS" out/keyed.db
+          ls -l out
+          df -h .
+
+      - name: The parts and their manifest
+        if: steps.which.outputs.build == 'yes'
+        run: |
+          python3 -I builder/load_parts.py parts out/keyed.db rel "$MB"
+          cp "rel/load-$B.json" rel/load.json
+          ls -l rel | tail -5
+          du -sh rel
+
+      - name: The release
+        if: steps.which.outputs.build == 'yes'
+        run: |
+          tag="data-$B"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            sh builder/replace_release_files.sh "$tag" rel
+          else
+            gh release create "$tag" rel/* --title "$B" --notes "Built from MusicBrainz's full dump $B (CC0)."
+          fi
+          gh release view "$tag" --json assets --jq '[.assets[] | .size] | "\(length) files, \(add) bytes"'
+
+      # Only after this build's release is up. Tags sort by their dump's date; a number under 2 is refused, so the
+      # release before the newest is always still there for anyone part-way through reading it.
+      - name: Older releases deleted (the newest KEEP stay)
+        if: steps.which.outputs.build == 'yes'
+        run: |
+          case "$KEEP" in ''|*[!0-9]*) echo "keep: a whole number, please"; exit 1 ;; esac
+          [ "$KEEP" -ge 2 ] || { echo "keep: 2 or more"; exit 1; }
+          tags=$(gh release list --limit 200 --json tagName --jq '.[].tagName')
+          old=$(printf '%s\n' "$tags" | grep '^data-' | sort -r | tail -n +"$((KEEP + 1))" || true)
+          for t in $old; do
+            echo "deleting $t"
+            gh release delete "$t" --yes --cleanup-tag
+          done
+          gh release list --limit 20

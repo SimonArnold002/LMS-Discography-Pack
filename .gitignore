@@ -1,0 +1,9 @@
+out/
+work/
+rel/
+dsc/
+*.db
+*.db.gz
+*.db-*
+__pycache__/
+.DS_Store
