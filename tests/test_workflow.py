@@ -5,7 +5,8 @@ import os, re, unittest
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PATH = os.path.join(HERE, '.github', 'workflows', 'build.yml')
-TOKEN_STEPS = ['Which dump', 'The release', 'Older releases deleted (the newest KEEP stay)']
+TOKEN_STEPS = ['Which dump', 'The release', 'Older releases deleted (the newest KEEP stay)',
+               'The last-run file, when the newest commit is two weeks old']
 
 
 def steps(text):
@@ -50,6 +51,30 @@ class TestWorkflow(unittest.TestCase):
             # No step that holds the token runs the build's Python or the name-key Perl.
             elif re.search(r'python3 (?!-I builder/fetch_dump\.py latest)|perl|keyed\.py|build_pack', chunk):
                 self.fail(f'{name}: runs build code with the token')
+
+    def test_it_runs_once_a_day_off_the_hour_and_by_hand(self):
+        crons = re.findall(r"- cron: '([^']*)'", self.text)
+        self.assertEqual(len(crons), 1)
+        minute, hour, dom, month, dow = crons[0].split()
+        self.assertTrue(minute.isdigit() and 5 <= int(minute) <= 55, minute)     # not at the start of an hour
+        self.assertTrue(hour.isdigit() and 0 <= int(hour) <= 23, hour)
+        self.assertEqual((dom, month, dow), ('*', '*', '*'))
+        self.assertIn('\n  workflow_dispatch:\n', self.text)
+
+    def test_the_last_run_step_is_last_and_runs_whether_or_not_a_dump_was_built(self):
+        name = TOKEN_STEPS[-1]
+        self.assertEqual(list(self.steps)[-1], name)
+        chunk = self.steps[name]
+        self.assertNotIn('if:', chunk)
+        self.assertIn('run: sh builder/mark_run.sh "$GITHUB_REPOSITORY" 14 "$MARK"', chunk)
+        self.assertIn('      MARK: ${{ inputs.mark }}', self.text.split('\n    steps:\n', 1)[0])
+
+    def test_a_scheduled_run_has_every_value_it_needs(self):
+        # A scheduled run has no inputs: each is empty. The first step's checks must pass with them empty wherever the
+        # job gives no default of its own (the dump, force, mark), and bits, mb_part and keep have theirs.
+        job_env = self.text.split('\n    steps:\n', 1)[0]
+        for name in ('bits', 'mb_part', 'keep'):
+            self.assertRegex(job_env, r"\$\{\{ inputs\.%s \|\| '\d+' \}\}" % name)
 
     def test_a_checkout_leaves_no_token_behind(self):
         # actions/checkout writes the token into .git/config unless told not to: every later step could read it.

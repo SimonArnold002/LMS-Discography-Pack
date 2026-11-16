@@ -1,8 +1,13 @@
 # Builds one MusicBrainz dump into the keyed data file, cuts it into parts with a manifest, and publishes them as the
-# release data-<dump>. Started by hand. Nothing here reads or writes anything but MusicBrainz's dump and this repo.
+# release data-<dump>. Runs once a day (a day with no new dump builds nothing: about two minutes) and by hand.
+# Nothing here reads or writes anything but MusicBrainz's dump and this repo.
 name: Build
 
 on:
+  # Off the hour: GitHub delays and can drop scheduled runs at busy times, the start of an hour above all. A dump's
+  # files are complete about five hours after the time in its name (00:2x); a run a day means no dump day is assumed.
+  schedule:
+    - cron: '23 7 * * *'
   workflow_dispatch:
     inputs:
       dump:
@@ -21,6 +26,10 @@ on:
       keep:
         description: 'Releases to keep (the newest ones; older are deleted after a build)'
         default: '2'
+      mark:
+        description: 'Write the last-run file now (else only when the newest commit is two weeks old)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -44,6 +53,7 @@ jobs:
       BITS: ${{ inputs.bits || '14' }}
       MB: ${{ inputs.mb_part || '32' }}
       KEEP: ${{ inputs.keep || '2' }}
+      MARK: ${{ inputs.mark }}
     steps:
       - name: The inputs, checked before anything runs
         run: |
@@ -147,3 +157,10 @@ jobs:
             gh release delete "$t" --yes --cleanup-tag
           done
           gh release list --limit 20
+
+      # Last, and on a day with nothing to build too: GitHub switches a public repository's schedules off after 60
+      # days without activity, and a release is not a commit (builder/mark_run.sh).
+      - name: The last-run file, when the newest commit is two weeks old
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh builder/mark_run.sh "$GITHUB_REPOSITORY" 14 "$MARK"
