@@ -126,6 +126,7 @@ def skey(link_order, when, link_id):
 NO_WHEN = (None, None, None, None, None, None, 0)
 
 AA_KIND = {'member of band': 1, 'collaboration': 2}
+BAND_KIND = AA_KIND['member of band']
 RG_URL_KINDS = {'allmusic': 1, 'discogs': 2, 'wikipedia': 3, 'review': 4, 'official homepage': 5}
 SVC_RE = [
     (1, re.compile(r'^https?://(?:www\.|open\.|play\.)?qobuz\.com/(?:[a-z]{2}-[a-z]{2}/)?(?:artist/(\d+)|interpreter/[^/]+/(\d+))(?:[/?#]|$)', re.I)),
@@ -147,7 +148,7 @@ CREATE TABLE artist_alias (artist INTEGER NOT NULL, name TEXT NOT NULL, locale T
 CREATE TABLE artist_url (artist INTEGER NOT NULL, svc INTEGER NOT NULL, ext INTEGER NOT NULL,
                          PRIMARY KEY (artist, svc, ext)) WITHOUT ROWID;
 CREATE TABLE artist_rel (a INTEGER NOT NULL, b INTEGER NOT NULL, kind INTEGER NOT NULL,
-                         epon INTEGER NOT NULL, skey BLOB NOT NULL,
+                         epon INTEGER NOT NULL, skey BLOB NOT NULL, named INTEGER NOT NULL DEFAULT 0,
                          PRIMARY KEY (a, b, kind)) WITHOUT ROWID;
 CREATE TABLE artist_redirect (gid BLOB PRIMARY KEY, artist INTEGER NOT NULL) WITHOUT ROWID;
 CREATE TABLE rgx (id INTEGER PRIMARY KEY, gid BLOB NOT NULL, boot INTEGER NOT NULL, discogs INTEGER);
@@ -357,6 +358,12 @@ def build(SRC, OUT, dsc, dump_id):
     aname, probe = namekeys(dsc, art)
     log(f'same-name keys {len(aname)} for {len(art)} artists; probe {len(probe)} names')
 
+    # --- a band NAMED AFTER its member: the plugin's own rule, by the real Perl ----
+    # Member-of-band links only (a the member, b the band). The plugin folds such a band into the member's page
+    # whether or not MusicBrainz marks the link eponymous; `named` says so without the plugin's name code.
+    named = named_after(dsc, art, [k for k in rel if k[2] == BAND_KIND and k[0] in art and k[1] in art])
+    log(f'member-of-band links whose band is named after the member: {len(named)}')
+
     # --- write ------------------------------------------------------------------
     if os.path.exists(OUT):
         os.remove(OUT)
@@ -369,8 +376,9 @@ def build(SRC, OUT, dsc, dump_id):
                   ((a, n, loc, p) for a in sorted(a_alias) if a in art for (n, loc), p in a_alias[a].items()))
     c.executemany('INSERT INTO artist_url VALUES (?,?,?)',
                   ((a, k, e) for a in sorted(a_svc) if a in art for k, e in a_svc[a]))
-    c.executemany('INSERT INTO artist_rel VALUES (?,?,?,?,?)',
-                  ((a, b, k, ep, sk) for (a, b, k), (ep, sk) in sorted(rel.items()) if a in art and b in art))
+    c.executemany('INSERT INTO artist_rel VALUES (?,?,?,?,?,?)',
+                  ((a, b, k, ep, sk, 1 if (a, b, k) in named else 0)
+                   for (a, b, k), (ep, sk) in sorted(rel.items()) if a in art and b in art))
     c.executemany('INSERT INTO artist_redirect VALUES (?,?)', ((gid(g), a) for g, a in redir))
     groups = sorted(set(rg_alias) | set(eds) | set(rg_links) | set(rg_dg) | boot)
     c.executemany('INSERT INTO rgx VALUES (?,?,?,?)',
@@ -427,6 +435,18 @@ def namekeys(dsc, art):
         else:
             aname.add((k, int(a)))
     return aname, probe
+
+
+def named_after(dsc, art, links):
+    """The (a, b, kind) of `links` whose band b is named after its member a, from namekeys.pl --named-after (the
+    plugin's own _namedAfter on its own _norm)."""
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'namekeys.pl')
+    ok = lambda n: '\t' not in n and '\n' not in n
+    use = [k for k in links if ok(art[k[0]][1]) and ok(art[k[1]][1])]
+    lines = [f'{j}\t{art[a][1]}\t{art[b][1]}\n' for j, (a, b, _) in enumerate(use)]
+    p = subprocess.run(['perl', script, dsc, '--named-after'], input=''.join(lines).encode('utf-8'),
+                       capture_output=True, check=True)
+    return {use[int(x)] for x in p.stdout.decode('utf-8').split()}
 
 
 if __name__ == '__main__':

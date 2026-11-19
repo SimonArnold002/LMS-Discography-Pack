@@ -175,9 +175,9 @@ def entries(narrow_db, out):
         'a': _by(src.cursor(), 'SELECT a.id, a.gid, a.name, a.ngroups, i.comment, i.type, i.country '
                                'FROM artist a LEFT JOIN artist_info i ON i.artist = a.id ORDER BY a.id'),
         'al': _by(src.cursor(), 'SELECT artist, name, locale, prim FROM artist_alias ORDER BY artist'),
-        'f': _by(src.cursor(), 'SELECT r.a, r.kind, r.epon, t.gid, t.name, r.skey FROM artist_rel r '
+        'f': _by(src.cursor(), 'SELECT r.a, r.kind, r.epon, t.gid, t.name, r.named, r.skey FROM artist_rel r '
                                'JOIN artist t ON t.id = r.b ORDER BY r.a, r.kind, r.skey'),
-        'b': _by(src.cursor(), 'SELECT r.b, r.kind, r.epon, t.gid, t.name, r.skey FROM artist_rel r '
+        'b': _by(src.cursor(), 'SELECT r.b, r.kind, r.epon, t.gid, t.name, r.named, r.skey FROM artist_rel r '
                                'JOIN artist t ON t.id = r.a ORDER BY r.b, r.kind, r.skey'),
         'u': _by(src.cursor(), 'SELECT artist, svc, ext FROM artist_url ORDER BY artist, svc, ext'),
     }
@@ -188,8 +188,10 @@ def entries(narrow_db, out):
                 continue          # parts of an artist the table lacks (none are written that way)
             gid, name, ng, cmt, typ, cty = p['a'][0]
             al = sorted(([nm, loc, pr] for nm, loc, pr in p['al']), key=lambda x: (x[0], x[1]))
-            rels = [[0, k, ep, hx(g), nm] for k, ep, g, nm, _ in p['f']] + \
-                   [[1, k, ep, hx(g), nm] for k, ep, g, nm, _ in p['b']]
+            # A link whose band is named after its member (build_pack.py `named`) carries a 6th field, 1; no other has one.
+            one = lambda d, k, ep, g, nm, named: [d, k, ep, hx(g), nm] + ([1] if named else [])
+            rels = [one(0, k, ep, g, nm, na) for k, ep, g, nm, na, _ in p['f']] + \
+                   [one(1, k, ep, g, nm, na) for k, ep, g, nm, na, _ in p['b']]
             doc = [name, ng, cmt, typ, cty, al, rels, [[s_, e] for s_, e in p['u']]]
             yield 'art', _h_gid(gid), hx(gid), jdump(doc)
         for g, a in src.cursor().execute('SELECT r.gid, t.gid FROM artist_redirect r JOIN artist t ON t.id = r.artist'):

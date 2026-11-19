@@ -62,7 +62,7 @@ class TestBuild(Built):
         names = {r[0] for r in self.q(self.v1, "SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertIn('namekey_probe', names)
         cols = [r[1] for r in self.q(self.v1, 'PRAGMA table_info(artist_rel)')]
-        self.assertEqual(cols, ['a', 'b', 'kind', 'epon', 'skey'])
+        self.assertEqual(cols, ['a', 'b', 'kind', 'epon', 'skey', 'named'])
 
     def test_relation_order_is_musicbrainz(self):
         # Bjork's bands: Kukl (1985-1988, ended), The Sugarcubes (1990), The
@@ -70,6 +70,38 @@ class TestBuild(Built):
         order = [r[0] for r in self.q(self.v1, 'SELECT b FROM artist_rel WHERE a = 1 AND kind = 1 ORDER BY kind, skey')]
         self.assertEqual(order, [3, 2, 7])
         self.assertEqual(self.q(self.v1, 'SELECT epon FROM artist_rel WHERE a = 1 AND b = 2')[0][0], 1)
+
+    def test_a_band_named_after_its_member_is_marked(self):
+        # Björk is a member of "Björk & The Elgar Sisters" (7): named after her, not marked eponymous by MusicBrainz.
+        # The Sugarcubes (2, eponymous) and Kukl (3) are not named after her; her collaboration (4) is no band link.
+        rows = self.q(self.v1, 'SELECT b, kind, epon, named FROM artist_rel WHERE a = 1 ORDER BY b')
+        self.assertEqual(rows, [(2, 1, 1, 0), (3, 1, 0, 0), (4, 2, 0, 0), (7, 1, 0, 1)])
+        self.assertEqual(self.q(self.v1, 'SELECT count(*) FROM artist_rel WHERE named')[0][0], 1)
+
+    def test_named_after_is_the_plugins_own_rule(self):
+        # builder/namekeys.pl --named-after: Sources::_namedAfter on Sources::_norm, the cases its own comments name.
+        cases = [('Oscar Peterson', 'The Oscar Peterson Trio', True), ('Miles Davis', 'Miles Davis Quintet', True),
+                 ('Chick Corea', 'Chick Corea & Origin', True), ('Chick Corea', 'The Chick Corea + Steve Gadd Band', True),
+                 ('The The', 'The The Band', True), ('Björk', 'Bjork Trio', True),
+                 ('Frank Sinatra', 'The Nelson Riddle Orchestra', False), ('Davis', 'Miles Davis', False),
+                 ('Miles Davis', 'Miles Davis', False), ('Miles Davis', 'The Miles Davis', False),
+                 ('Miles', 'Milestones', False), ('John Coltrane', 'Miles Davis Quintet', False)]
+        lines = ''.join(f'{i}\t{a}\t{b}\n' for i, (a, b, _) in enumerate(cases))
+        # Three ways, one answer: the checkout's own sub where it has one, the script's copy of it (--named-after=own),
+        # and a checkout from before the plugin had the sub (its Sources.pm with that sub cut out).
+        with open(os.path.join(DSC, 'Discography', 'Sources.pm'), encoding='utf-8') as f:
+            src = f.read()
+        old = os.path.join(self.tmp, 'dsc-before')
+        os.makedirs(os.path.join(old, 'Discography'), exist_ok=True)
+        cut = src.replace('sub _namedAfter {', 'sub _namedAfterGone {')
+        with open(os.path.join(old, 'Discography', 'Sources.pm'), 'w', encoding='utf-8') as f:
+            f.write(cut)
+        for dsc, flag in ((DSC, '--named-after'), (DSC, '--named-after=own'), (old, '--named-after')):
+            with self.subTest(flag=flag, old=dsc is old):
+                p = subprocess.run(['perl', os.path.join(HERE, '..', 'builder', 'namekeys.pl'), dsc, flag],
+                                   input=lines.encode('utf-8'), capture_output=True)
+                self.assertEqual(p.returncode, 0, p.stderr)
+                self.assertEqual({int(x) for x in p.stdout.split()}, {i for i, c in enumerate(cases) if c[2]})
 
     def test_kept_and_dropped(self):
         ids = {r[0] for r in self.q(self.v1, 'SELECT id FROM artist')}

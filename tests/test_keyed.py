@@ -179,6 +179,15 @@ class TestKeyed(Keyed):
         bjork = self.entry(2, 'art', fixture.g(1).replace('-', ''))
         self.assertEqual((len(bjork), bjork[0]), (8, 'Björk'))
         self.assertTrue({'Björk Guðmundsdóttir', 'Kukl'} <= {a[0] for a in bjork[5]})
+        # Her links: the band named after her carries a 6th field, 1, and no other link has one; the band's own
+        # document carries it on its link back to her.
+        hx = lambda n: fixture.g(n).replace('-', '')
+        fwd = {r[3]: r for r in bjork[6] if r[0] == 0}
+        self.assertEqual(fwd[hx(7)], [0, 1, 0, hx(7), 'Björk & The Elgar Sisters', 1])
+        self.assertEqual(fwd[hx(2)], [0, 1, 1, hx(2), 'The Sugarcubes'])
+        self.assertEqual({len(r) for g, r in fwd.items() if g != hx(7)}, {5})
+        back = [r for r in self.entry(2, 'art', hx(7))[6] if r[3] == hx(1)]
+        self.assertEqual(back, [[1, 1, 0, hx(1), 'Björk', 1]])
         # A merged-away gid points at the current artist.
         self.assertEqual(self.entry(2, 'art', fixture.g(99).replace('-', '')), fixture.g(1).replace('-', ''))
 

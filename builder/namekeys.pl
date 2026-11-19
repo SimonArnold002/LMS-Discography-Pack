@@ -8,6 +8,7 @@
 # stdout: <id> TAB <key>  per line (UTF-8; an empty key is skipped)
 #
 # Usage (from build_pack.py): perl builder/namekeys.pl <LMS-Discography checkout> < names.tsv > keys.tsv
+#        perl builder/namekeys.pl <LMS-Discography checkout> --named-after < pairs.tsv > ids  (below)
 # Only <checkout>/Discography/Sources.pm is loaded (its own `use` of the
 # plugin's DB.pm and Slim's modules is stubbed below).
 use strict;
@@ -58,6 +59,30 @@ my $norm = \&Plugins::Discography::Sources::_norm;
 binmode STDIN;
 binmode STDOUT;
 local $/ = "\n";
+# --named-after: stdin <id> TAB <artist name> TAB <band name>; stdout the <id> of every line whose band is NAMED AFTER
+# the artist by the plugin's own rule (Sources::_namedAfter on the two _norm'd names: the band's name begins with his
+# whole name and adds to it, a leading "the" ignored).
+# The rule is the plugin's Sources::_namedAfter where the checkout has it. A checkout from before the plugin had it
+# as a sub of its own gets the copy below, the same lines (--named-after=own asks for the copy whatever the checkout
+# holds: the tests hold the two to the same answers).
+sub own_named_after {
+    my ($an, $bn) = @_;
+    s/^the // for $an, $bn;
+    return 0 unless length $an && length $bn && $bn ne $an;
+    return index("$bn ", "$an ") == 0 ? 1 : 0;
+}
+if (@ARGV && $ARGV[0] =~ /^--named-after(=own)?$/) {
+    my $na = (!$1 && Plugins::Discography::Sources->can('_namedAfter')) || \&own_named_after;
+    while (my $line = <STDIN>) {
+        chomp $line;
+        my ($id, $an, $bn) = split /\t/, $line, 3;
+        next unless defined $bn && length $an && length $bn;
+        my ($ka, $kb) = ($norm->($an), $norm->($bn));
+        next unless defined $ka && length $ka && defined $kb && length $kb;
+        print "$id\n" if $na->($ka, $kb);
+    }
+    exit 0;
+}
 while (my $line = <STDIN>) {
     chomp $line;
     my ($id, $name) = split /\t/, $line, 2;

@@ -70,7 +70,7 @@ def make_dump(root, version=1):
                         ar(4, g(4), 'Some Duo!' if v2 else 'Some Duo'),
                         ar(5, VA, 'Various Artists'),
                         ar(6, g(6), 'Sigur Rós', 2),
-                        ar(7, g(7), 'The Elgar Sisters', 2),
+                        ar(7, g(7), 'Björk & The Elgar Sisters', 2),
                         ar(8, g(8), 'Unlinked Nobody')])
     acn = [[500, 0, 1, 'Björk', ''], [501, 0, 1, 'Björk', ' & '], [501, 1, 6, 'Sigur Rós', ''],
            [502, 0, 5, 'Various Artists', ''],
