@@ -3,13 +3,13 @@
 Sub-commands:
   parts <keyed file> <out dir> <MB a part>
       load-<dump>-NNN.bin: binary records [1-byte kind index][4-byte key][4-byte length][value], the kinds in
-      KINDS order and each kind's rows in key order, a part cut at a record once it reaches its size (the same
+      the file's order (keyed.kinds_of its file_format) and each kind's rows in key order, a part cut at a record once it reaches its size (the same
       file gives the same bytes);
       load-<dump>.json, the manifest: format, dump, the kinds (their index order), every kind's rows, the meta
       rows and each part's name, records, bytes, SHA-256.
       Refuses, before writing anything, a file whose keys are not 4-byte bucket numbers (bits 0, or not bytes at
-      all), whose values are not bytes, or that holds tables other than the meta and the kinds, and an out dir that
-      already holds load parts (a stale part must never travel with a new manifest).
+      all), whose values are not bytes, or that holds tables other than the meta and its format's kinds, and an out
+      dir that already holds load parts (a stale part must never travel with a new manifest).
 """
 import hashlib
 import json
@@ -19,7 +19,7 @@ import struct
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from keyed import KINDS  # noqa: E402
+from keyed import FILE_FORMAT, kinds_of  # noqa: E402
 
 
 def parts(keyed_db, outdir, part_bytes):
@@ -29,9 +29,12 @@ def parts(keyed_db, outdir, part_bytes):
         raise SystemExit(f'{outdir} already holds load parts: give a fresh folder')
     c = sqlite3.connect(f'file:{keyed_db}?mode=ro', uri=True)
     tables = {t for (t,) in c.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite%'")}
-    if tables != {'meta', *KINDS}:
+    if 'meta' not in tables:
         raise SystemExit(f'not a keyed file: tables {sorted(tables)}')
     meta = sorted(c.execute('SELECT key, value FROM meta'))
+    KINDS = kinds_of(dict(meta).get('file_format', FILE_FORMAT))
+    if tables != {'meta', *KINDS}:
+        raise SystemExit(f'not a keyed file: tables {sorted(tables)}')
     dump = dict(meta).get('dump')
     if not dump:
         raise SystemExit('the file names no dump')

@@ -1,0 +1,115 @@
+# A test run of the build on this branch: the build's own commands (build.yml) on one MusicBrainz dump, the disk free
+# written down after each, then a report on the file and its parts (builder/build_report.py) written to reports/ on
+# this branch. Publishes nothing; runs on a push to this branch's code and by hand, never on a schedule.
+name: Build test
+
+on:
+  push:
+    branches: [more-records]
+    paths: ['builder/**', 'tests/**', '.github/workflows/build-test.yml']
+  workflow_dispatch:
+    inputs:
+      dump:
+        description: 'fullexport dump name (blank = the newest)'
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-test
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    # Inputs reach the shell as variables only. The token reaches the one step that writes the report, which runs no
+    # build code.
+    env:
+      DSC_REF: ${{ vars.DSC_REF || 'ef6f87b2cfd7e3ac05e7f3986fef3893947b3e8c' }}
+      DUMP: ${{ inputs.dump }}
+      MB: '32'
+    steps:
+      - name: The inputs, checked before anything runs
+        run: |
+          case "$DSC_REF" in *[!0-9a-f]*) echo "DSC_REF: a full commit id, please"; exit 1 ;; esac
+          [ "${#DSC_REF}" -eq 40 ] || { echo "DSC_REF: a full commit id (40 characters), please"; exit 1; }
+          case "$DUMP" in *[!0-9-]*) echo "not a dump name: $DUMP"; exit 1 ;; esac
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4, read 2026-11-13
+        with:
+          persist-credentials: false
+
+      - name: LMS-Discography's Sources.pm (the name keys)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4, read 2026-11-13
+        with:
+          repository: SimonArnold002/LMS-Discography
+          ref: ${{ env.DSC_REF }}
+          path: dsc
+          persist-credentials: false
+          sparse-checkout: Discography/Sources.pm
+          sparse-checkout-cone-mode: false
+
+      - name: Disk space and tools
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get update -qq && sudo apt-get install -y -qq lbzip2
+          md5sum dsc/Discography/Sources.pm
+          df -h . && free -g && nproc
+
+      - name: Tests (the made-up dump; nothing is built if they fail)
+        run: DSC_DIR="$PWD/dsc" python3 -m unittest discover -s tests -v
+
+      - name: Which dump
+        run: |
+          B="$DUMP"
+          [ -n "$B" ] || B=$(python3 -I builder/fetch_dump.py latest)
+          case "$B" in *[!0-9-]*|'') echo "not a dump name: $B"; exit 1 ;; esac
+          echo "B=$B" >> "$GITHUB_ENV"
+          echo "testing the build on dump $B"
+
+      # The build's commands in its order, with the disk free after each and more.py's counts kept before its file goes.
+      - name: Fetch, the tables, the records, the keyed file (the build's commands)
+        run: |
+          mkdir -p out
+          d() { printf '%-26s %s\n' "after $1" "$(df -h . | tail -1)" >> out/df.txt; }
+          python3 -I builder/measure_extra.py fetch "$B" work
+          d 'the first download'
+          python3 -I builder/build_pack.py work out/base.db --dsc "$PWD/dsc" --dump "$B"
+          d 'the tables'
+          python3 -I builder/measure_extra.py facts work out/facts.db > /dev/null
+          d 'the facts'
+          python3 -I builder/keyed.py aliases out/base.db "$PWD/dsc" out/aliases.tsv
+          rm -rf work
+          python3 -I builder/keyed.py narrow out/base.db out/facts.db out/aliases.tsv out/tables.db
+          d 'the tables file'
+          rm -f out/base.db out/facts.db out/aliases.tsv
+          python3 -I builder/more.py fetch "$B" work
+          d 'the second download'
+          python3 -I builder/more.py entries work out/more.db
+          d 'the more records'
+          python3 -I builder/build_report.py stat out/more.db > out/more-stat.txt
+          rm -rf work
+          python3 -I builder/keyed.py entries out/tables.db out/entries.db out/more.db
+          d 'the records'
+          rm -f out/more.db
+          python3 -I builder/keyed.py keyed out/entries.db out/tables.db sized out/keyed.db
+          d 'the keyed file'
+          ls -l out
+          cat out/df.txt
+
+      - name: The parts and their manifest (the build's commands)
+        run: |
+          python3 -I builder/load_parts.py parts out/keyed.db rel "$MB"
+          du -sh rel
+
+      - name: The report
+        run: |
+          python3 -I builder/build_report.py report out/keyed.db "rel/load-$B.json" out/df.txt out/more-stat.txt > "out/build-$B-run$GITHUB_RUN_ID.txt"
+          cat "out/build-$B-run$GITHUB_RUN_ID.txt" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: The report, written to this branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh builder/put_report.sh "$GITHUB_REPOSITORY" more-records "reports/build-$B-run$GITHUB_RUN_ID.txt" "out/build-$B-run$GITHUB_RUN_ID.txt"

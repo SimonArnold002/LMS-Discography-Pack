@@ -71,10 +71,37 @@ class TestWorkflow(unittest.TestCase):
 
     def test_a_scheduled_run_has_every_value_it_needs(self):
         # A scheduled run has no inputs: each is empty. The first step's checks must pass with them empty wherever the
-        # job gives no default of its own (the dump, force, mark), and bits, mb_part and keep have theirs.
+        # job gives no default of its own (the dump, force, mark), and mb_part and keep have theirs.
         job_env = self.text.split('\n    steps:\n', 1)[0]
-        for name in ('bits', 'mb_part', 'keep'):
+        for name in ('mb_part', 'keep'):
             self.assertRegex(job_env, r"\$\{\{ inputs\.%s \|\| '\d+' \}\}" % name)
+
+    def test_the_build_makes_the_more_file_at_each_kinds_own_count(self):
+        # Two downloads, never on the disk together: today's tables made into the tables file and deleted (with what
+        # was made from them) before the second download; its tables made into more.py's records and deleted before
+        # the records are put together. The keyed file sized: no input sets one count for every kind.
+        lines = [x.strip() for x in self.steps['Fetch, the tables, the records, the keyed file'].split('run: |', 1)[1]
+                 .splitlines() if x.strip()]
+        order = ['python3 -I builder/measure_extra.py fetch "$B" work',
+                 'python3 -I builder/keyed.py aliases out/base.db "$PWD/dsc" out/aliases.tsv',
+                 'rm -rf work',
+                 'python3 -I builder/keyed.py narrow out/base.db out/facts.db out/aliases.tsv out/tables.db',
+                 'rm -f out/base.db out/facts.db out/aliases.tsv',
+                 'python3 -I builder/more.py fetch "$B" work',
+                 'python3 -I builder/more.py entries work out/more.db',
+                 'rm -rf work',
+                 'python3 -I builder/keyed.py entries out/tables.db out/entries.db out/more.db',
+                 'rm -f out/more.db',
+                 'python3 -I builder/keyed.py keyed out/entries.db out/tables.db sized out/keyed.db']
+        self.assertEqual([x for x in lines if x in order], order)
+        self.assertEqual([x for x in lines if ' fetch ' in x], [order[0], order[5]])
+        self.assertEqual([x for x in lines if x.startswith('python3')][:4],
+                         ['python3 -I builder/measure_extra.py fetch "$B" work',
+                          'python3 -I builder/build_pack.py work out/base.db --dsc "$PWD/dsc" --dump "$B"',
+                          'python3 -I builder/measure_extra.py facts work out/facts.db > /dev/null',
+                          order[1]])
+        self.assertNotIn('inputs.bits', self.text)
+        self.assertNotIn('BITS', self.text)
 
     def test_a_checkout_leaves_no_token_behind(self):
         # actions/checkout writes the token into .git/config unless told not to: every later step could read it.
@@ -100,7 +127,7 @@ class TestWorkflow(unittest.TestCase):
         import subprocess
         script = self.steps['The inputs, checked before anything runs'].split('run: |\n', 1)[1]
         script = '\n'.join(line[10:] for line in script.splitlines())
-        good = {'DSC_REF': 'a' * 40, 'DUMP': '20261114-002230', 'BITS': '14', 'MB': '32', 'KEEP': '2'}
+        good = {'DSC_REF': 'a' * 40, 'DUMP': '20261114-002230', 'MB': '32', 'KEEP': '2'}
 
         def run(**change):
             env = {**good, **change, 'PATH': os.environ['PATH']}
@@ -110,7 +137,7 @@ class TestWorkflow(unittest.TestCase):
         self.assertEqual(run(DUMP=''), 0)                              # blank = the newest
         for change in ({'DSC_REF': 'dev'}, {'DSC_REF': 'a' * 39}, {'DSC_REF': 'a' * 41}, {'DSC_REF': 'A' * 40},
                        {'DSC_REF': ''}, {'DSC_REF': 'refs/heads/dev'}, {'DUMP': '2026"; id; "'}, {'DUMP': 'latest'},
-                       {'BITS': '14; id'}, {'MB': ''}, {'KEEP': '-1'}, {'KEEP': '2 3'}):
+                       {'MB': '32; id'}, {'MB': ''}, {'KEEP': '-1'}, {'KEEP': '2 3'}):
             with self.subTest(change=change):
                 self.assertEqual(run(**change), 1)
 

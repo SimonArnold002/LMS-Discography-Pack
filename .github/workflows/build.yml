@@ -17,9 +17,6 @@ on:
         description: 'Build even if this dump is already published'
         type: boolean
         default: false
-      bits:
-        description: 'buckets a kind, as a power of two'
-        default: '14'
       mb_part:
         description: 'MB a part'
         default: '32'
@@ -50,7 +47,6 @@ jobs:
       DSC_REF: ${{ vars.DSC_REF || 'ef6f87b2cfd7e3ac05e7f3986fef3893947b3e8c' }}
       DUMP: ${{ inputs.dump }}
       FORCE: ${{ inputs.force }}
-      BITS: ${{ inputs.bits || '14' }}
       MB: ${{ inputs.mb_part || '32' }}
       KEEP: ${{ inputs.keep || '2' }}
       MARK: ${{ inputs.mark }}
@@ -60,8 +56,8 @@ jobs:
           case "$DSC_REF" in *[!0-9a-f]*) echo "DSC_REF: a full commit id, please"; exit 1 ;; esac
           [ "${#DSC_REF}" -eq 40 ] || { echo "DSC_REF: a full commit id (40 characters), please"; exit 1; }
           case "$DUMP" in *[!0-9-]*) echo "not a dump name: $DUMP"; exit 1 ;; esac
-          for n in "$BITS" "$MB" "$KEEP"; do
-            case "$n" in ''|*[!0-9]*) echo "bits, mb_part, keep: a whole number each"; exit 1 ;; esac
+          for n in "$MB" "$KEEP"; do
+            case "$n" in ''|*[!0-9]*) echo "mb_part, keep: a whole number each"; exit 1 ;; esac
           done
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4, read 2026-11-13
@@ -104,6 +100,9 @@ jobs:
             echo "build=yes" >> "$GITHUB_OUTPUT"
           fi
 
+      # Two passes of the dump, never on the disk together: today's tables, made into the tables file and deleted; then
+      # more.py's, made into its records and deleted. Each kind's bucket count is the builder's own (SIZED); the counts
+      # ride in the file's meta.
       - name: Fetch, the tables, the records, the keyed file
         if: steps.which.outputs.build == 'yes'
         run: |
@@ -112,11 +111,17 @@ jobs:
           python3 -I builder/build_pack.py work out/base.db --dsc "$PWD/dsc" --dump "$B"
           python3 -I builder/measure_extra.py facts work out/facts.db > /dev/null
           python3 -I builder/keyed.py aliases out/base.db "$PWD/dsc" out/aliases.tsv
+          df -h .
           rm -rf work
           python3 -I builder/keyed.py narrow out/base.db out/facts.db out/aliases.tsv out/tables.db
-          python3 -I builder/keyed.py entries out/tables.db out/entries.db
           rm -f out/base.db out/facts.db out/aliases.tsv
-          python3 -I builder/keyed.py keyed out/entries.db out/tables.db "$BITS" out/keyed.db
+          python3 -I builder/more.py fetch "$B" work
+          python3 -I builder/more.py entries work out/more.db
+          df -h .
+          rm -rf work
+          python3 -I builder/keyed.py entries out/tables.db out/entries.db out/more.db
+          rm -f out/more.db
+          python3 -I builder/keyed.py keyed out/entries.db out/tables.db sized out/keyed.db
           ls -l out
           df -h .
 

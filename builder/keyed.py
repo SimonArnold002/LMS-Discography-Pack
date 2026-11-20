@@ -6,13 +6,19 @@ The steps (the workflow runs them in turn and deletes what it is done with):
   narrow   <base.db> <facts.db> <aliases.tsv> <out.db>
            the tables file: build_pack.py's tables plus measure_extra.py's (every group an artist is credited on,
            the whole release map, barcodes, streaming album ids) and the alias keys
-  entries  <tables.db> <entries.db>
+  entries  <tables.db> <entries.db> [<more.db>]
            the same content as records: art (an artist and its parts, or a merged-away gid's redirect), lst (its
            group list), grp (a group's extras), nam (a name key's acts), ali (an alias key's acts), rel (a release),
-           bar, svc
-  keyed    <entries.db> <tables.db> <bits> <out.db>
+           bar, svc. With more.db (builder/more.py) the file is FILE_FORMAT_MORE: an artist's abo and lnk are
+           appended to its art record and a release's rlb and rcr to its rel record (FOLD, trailing fields), and
+           MORE_KINDS are kinds of their own (prf: the abo and lnk of an artist art lacks; crd, who, pgr; rol: the
+           names of the link types and attributes the new records give by id, two records, `link_type` and
+           `attribute`, each {id: name})
+  keyed    <entries.db> <tables.db> <bits | sized> <out.db>
            the keyed file: every kind a table (k BLOB PRIMARY KEY, v BLOB) WITHOUT ROWID, 2^bits buckets a kind
            (0: one row a record), a bucket's records one deflated JSON object. The same records give the same bytes.
+           `sized` (FILE_FORMAT_MORE only): each kind at its own count, SIZED; the counts ride in meta
+           (bits_by_kind) in place of the one `bits`.
 
 Nothing that reads the real dump runs anywhere but the build's runner; the tests use the made-up dump in
 tests/fixture.py.
@@ -22,10 +28,22 @@ import hashlib, json, os, shutil, sqlite3, subprocess, sys, time, zlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import measure_extra  # noqa: E402  (variant_sql: the extra tables)
 
-FILE_FORMAT = 'data-1'
+FILE_FORMAT = 'data-1'                # the tables file, and a keyed file of KINDS
+FILE_FORMAT_MORE = 'data-2'           # a keyed file with builder/more.py's records: KINDS + MORE_KINDS
 PARTS = ['lists', 'relmap', 'barcode', 'links']   # measure_extra.py's; build_pack.py's tables are the rest
 KINDS = ['art', 'lst', 'grp', 'nam', 'ali', 'rel', 'bar', 'svc']
-GID_KINDS = {'art', 'lst', 'grp', 'rel'}
+MORE_KINDS = ['prf', 'crd', 'who', 'pgr', 'rol']
+GID_KINDS = {'art', 'lst', 'grp', 'rel', 'prf', 'crd', 'pgr'}
+# Appended to today's record of the same key, in this order, as trailing fields (a reader of today's fields reads
+# them as before): art [.., abo, lnk], rel [.., rlb, rcr]. An artist art lacks has them in prf, as [abo, lnk].
+FOLD = {'art': ['abo', 'lnk'], 'rel': ['rlb', 'rcr']}
+# Each kind's bucket count (bits) in a sized file: the count that stored it smallest while its average bucket stayed
+# within today's largest average bucket (lst, 17.0 kB deflated), none over the cap; measured on dump 20261118-002316
+# (measure-more run 44750228998). A table that grows keeps its count: the build logs each table's average and
+# largest bucket, and the cap is checked every build.
+SIZED = {'art': 14, 'lst': 14, 'grp': 11, 'nam': 13, 'ali': 11, 'rel': 15, 'bar': 14, 'svc': 13,
+         'prf': 10, 'crd': 14, 'who': 11, 'pgr': 12, 'rol': 1}   # rol: two records, kept out of the meta (and so
+                                                                  # out of a release's manifest and a reader's meta read)
 CAP = 2_000_000                       # the largest value a row may hold
 
 T0 = time.time()
@@ -41,6 +59,22 @@ def hx(b):
 
 def jdump(x):
     return json.dumps(x, ensure_ascii=False, separators=(',', ':'))
+
+
+def kinds_of(file_format):
+    """The kinds a keyed file of that format holds, in their order (a part's kind index)."""
+    if file_format == FILE_FORMAT_MORE:
+        return KINDS + MORE_KINDS
+    if file_format == FILE_FORMAT:
+        return list(KINDS)
+    raise SystemExit(f'not a keyed file format: {file_format!r}')
+
+
+def trim(x):
+    """The record without its trailing empty fields (null, 0, [], ''): builder/more.py's records' own rule."""
+    while x and (x[-1] is None or x[-1] == [] or x[-1] == '' or (type(x[-1]) is int and x[-1] == 0)):
+        x.pop()
+    return x
 
 
 def _keys(dsc, texts):
@@ -150,20 +184,52 @@ def _by(c, sql):
         yield r[0], r[1:]
 
 
-def entries(narrow_db, out):
+def _grouped(cur):
+    """(r[0], [r[1:] ...]) for runs of rows with the same first field, in the cursor's order."""
+    cur_k, acc = None, []
+    for r in cur:
+        if r[0] != cur_k:
+            if acc:
+                yield cur_k, acc
+            cur_k, acc = r[0], []
+        acc.append(r[1:])
+    if acc:
+        yield cur_k, acc
+
+
+def entries(narrow_db, out, more_db=None):
     """Every entry of the keyed layout, from the narrow file (so both layouts
     hold the same data by construction), into e(kind, h, k, v); v is the JSON
-    a lookup's answer is made from."""
+    a lookup's answer is made from. With more_db (builder/more.py entries), its
+    records too: folded into art and rel (FOLD), the rest as MORE_KINDS (the
+    names of link types and attributes as kind rol); the file's format in
+    em(key, value)."""
     if os.path.exists(out):
         os.remove(out)
     src = sqlite3.connect(f'file:{narrow_db}?mode=ro', uri=True)
+    more = sqlite3.connect(f'file:{more_db}?mode=ro', uri=True) if more_db else None
     o = sqlite3.connect(out, isolation_level=None)
     o.execute('PRAGMA journal_mode=OFF')
     o.execute('PRAGMA synchronous=OFF')
     o.execute('CREATE TABLE e (kind TEXT NOT NULL, h INTEGER NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, '
               'PRIMARY KEY (kind, k)) WITHOUT ROWID')
+    o.execute('CREATE TABLE em (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID')
     o.execute('BEGIN')
     n = {}
+    took = {a: 0 for adds in FOLD.values() for a in adds}
+
+    def folded(kind, h, k):
+        """The fields FOLD appends to `kind`'s record under k: each add's record, [] for one it lacks, trailing empties
+        dropped ([] when it has none of them)."""
+        if more is None:
+            return []
+        got = []
+        for a in FOLD[kind]:
+            r = more.execute('SELECT v FROM e WHERE kind = ? AND h = ? AND k = ?', (a, h, k)).fetchone()
+            if r:
+                took[a] += 1
+            got.append(json.loads(r[0]) if r else [])
+        return trim(got)
 
     def put(kind, rows):
         before = o.total_changes
@@ -193,11 +259,24 @@ def entries(narrow_db, out):
             rels = [one(0, k, ep, g, nm, na) for k, ep, g, nm, na, _ in p['f']] + \
                    [one(1, k, ep, g, nm, na) for k, ep, g, nm, na, _ in p['b']]
             doc = [name, ng, cmt, typ, cty, al, rels, [[s_, e] for s_, e in p['u']]]
-            yield 'art', _h_gid(gid), hx(gid), jdump(doc)
+            yield 'art', _h_gid(gid), hx(gid), jdump(doc + folded('art', _h_gid(gid), hx(gid)))
         for g, a in src.cursor().execute('SELECT r.gid, t.gid FROM artist_redirect r JOIN artist t ON t.id = r.artist'):
             yield 'art', _h_gid(g), hx(g), jdump(hx(a))
     put('art', art())
     log(f"entries art {n['art']:,}")
+
+    # prf: the abo and lnk of an artist art holds no record for (a redirect counts as none), as [abo, lnk].
+    if more is not None:
+        def prf():
+            for k, rs in _grouped(more.execute("SELECT k, h, kind, v FROM e WHERE kind IN ('abo', 'lnk') "
+                                               "ORDER BY k, kind")):
+                r = o.execute("SELECT v FROM e WHERE kind = 'art' AND k = ?", (k,)).fetchone()
+                if r and r[0].startswith('['):
+                    continue
+                by = {kind: v for _, kind, v in rs}
+                yield 'prf', rs[0][0], k, jdump(trim([json.loads(by[a]) if a in by else [] for a in FOLD['art']]))
+        put('prf', prf())
+        log(f"entries prf {n['prf']:,} (art took abo {took['abo']:,}, lnk {took['lnk']:,})")
 
     # grp: the extras (today's rgx and its three tables), by group id.
     ext = {}
@@ -256,7 +335,7 @@ def entries(narrow_db, out):
                             'ORDER BY n.key, a.ngroups DESC, a.name, a.id', lambda r: [hx(r[1]), r[2], r[3]]))
     log(f"entries nam {n['nam']:,}, ali {n['ali']:,}")
 
-    put('rel', (('rel', _h_gid(g), hx(g), jdump([hx(rg), t, s_]))
+    put('rel', (('rel', _h_gid(g), hx(g), jdump([hx(rg), t, s_] + folded('rel', _h_gid(g), hx(g))))
                 for g, rg, t, s_ in src.execute('SELECT gid, rg, type, sec FROM release')))
     put('bar', names('bar', 'SELECT b.code, g.gid FROM barcode b JOIN rg g ON g.id = b.rg '
                             'ORDER BY b.code, g.gid', lambda r: hx(r[1])))
@@ -265,6 +344,24 @@ def entries(narrow_db, out):
     put('svc', names('svc', "SELECT s.svc || ':' || s.ext, g.gid FROM svc_album s JOIN rg g ON g.id = s.rg "
                             "ORDER BY s.svc || ':' || s.ext, g.gid", lambda r: hx(r[1])))
     log(f"entries rel {n['rel']:,}, bar {n['bar']:,}, svc {n['svc']:,}")
+
+    if more is not None:
+        # A release's labels and credits whose release the file lacks have no record to ride on: counted, left out.
+        for a in FOLD['rel']:
+            (have,) = more.execute('SELECT count(*) FROM e WHERE kind = ?', (a,)).fetchone()
+            if have != took[a]:
+                print(f'::warning::{have - took[a]:,} {a} record(s) name a release the file lacks: left out',
+                      file=sys.stderr, flush=True)
+        for kind in ('crd', 'who', 'pgr'):
+            put(kind, more.execute('SELECT kind, h, k, v FROM e WHERE kind = ? ORDER BY h, k', (kind,)))
+        log(f"entries rel took rlb {took['rlb']:,}, rcr {took['rcr']:,}; crd {n['crd']:,}, who {n['who']:,}, "
+            f"pgr {n['pgr']:,}")
+        (names,) = more.execute("SELECT value FROM meta WHERE key = 'more_names'").fetchone()
+        put('rol', (('rol', _h_text(k), k, jdump(v)) for k, v in sorted(json.loads(names).items())))
+        o.execute('INSERT INTO em VALUES (?,?)', ('file_format', FILE_FORMAT_MORE))
+        more.close()
+    else:
+        o.execute('INSERT INTO em VALUES (?,?)', ('file_format', FILE_FORMAT))
     o.execute('COMMIT')
     o.execute('CREATE INDEX e_bucket ON e (kind, h, k)')
     src.close()
@@ -281,35 +378,61 @@ def _key_bytes(kind, k):
     return bytes.fromhex(k) if kind in GID_KINDS else k.encode('utf-8')
 
 
+def bits_of(file_format, bits):
+    """{kind: bucket count} for a file of that format: `bits` (a whole number) for every kind, or 'sized' (the more
+    file only): SIZED."""
+    kinds = kinds_of(file_format)
+    if bits == 'sized':
+        if file_format != FILE_FORMAT_MORE:
+            raise SystemExit(f'sized: a {FILE_FORMAT_MORE} file only (this is {file_format})')
+        return {k: SIZED[k] for k in kinds}
+    if isinstance(bits, bool) or not isinstance(bits, int) or not 0 <= bits <= 24:
+        raise SystemExit(f'bits: a whole number 0 to 24, or sized; not {bits!r}')
+    return {k: bits for k in kinds}
+
+
 def keyed(entries_db, narrow_db, bits, out):
-    """The keyed file for one bucket size (bits 0 = one row per entry): every
-    kind a table (k BLOB PRIMARY KEY, v BLOB) WITHOUT ROWID, no other index; a
-    bucket's v is its entries as one JSON object {key: entry}, deflated. The same
-    entries give the same bytes, so a delta holds only the buckets that changed.
+    """The keyed file (bits 0 = one row per entry; 'sized' = each kind at its
+    SIZED count, a more file only): every kind a table (k BLOB PRIMARY KEY, v
+    BLOB) WITHOUT ROWID, no other index; a bucket's v is its entries as one JSON
+    object {key: entry}, deflated. The same entries give the same bytes, so a
+    delta holds only the buckets that changed. The format is the entries'
+    (FILE_FORMAT, or FILE_FORMAT_MORE with MORE_KINDS, the counts in meta's
+    bits_by_kind, never a `bits` row a reader could take for every kind).
     Returns the values over the 2 MB cap (kind, bucket, bytes)."""
     if os.path.exists(out):
         os.remove(out)
     src = sqlite3.connect(f'file:{entries_db}?mode=ro', uri=True)
+    em = dict(src.execute('SELECT key, value FROM em'))
+    fmt = em['file_format']
+    kinds = kinds_of(fmt)
+    by_kind = bits_of(fmt, bits)
     nar = sqlite3.connect(f'file:{narrow_db}?mode=ro', uri=True)
     meta = dict(nar.execute('SELECT key, value FROM meta'))
     names = {t: dict(nar.execute(f'SELECT id, name FROM {t}')) for t in ('artist_type', 'rg_type', 'rg_sec')}
     probe = dict(nar.execute('SELECT name, key FROM namekey_probe'))
     nar.close()
-    meta.update({'layout': 'keyed', 'bits': str(bits),
+    meta.update({'layout': 'keyed', 'file_format': fmt,
                  'names': jdump({t: {str(i): v for i, v in d.items()} for t, d in names.items()}),
                  'namekey_probe': jdump(probe)})
+    if fmt == FILE_FORMAT_MORE:
+        meta.pop('bits', None)
+        meta['bits_by_kind'] = jdump(by_kind)
+    else:
+        meta['bits'] = str(bits)
     o = sqlite3.connect(out, isolation_level=None)
     o.execute('PRAGMA journal_mode=OFF')
     o.execute('PRAGMA synchronous=OFF')
     o.execute('PRAGMA page_size=4096')
     o.execute('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID')
-    for kind in KINDS:
+    for kind in kinds:
         o.execute(f'CREATE TABLE {kind} (k BLOB PRIMARY KEY, v BLOB NOT NULL) WITHOUT ROWID')
     o.execute('BEGIN')
     o.executemany('INSERT INTO meta VALUES (?,?)', sorted(meta.items()))
     over = []
-    for kind in KINDS:
-        if bits == 0:
+    for kind in kinds:
+        kb = by_kind[kind]
+        if kb == 0:
             # Key order: lower-case hex sorts as its bytes, and SQLite's TEXT
             # order is the UTF-8 bytes' order, so no sort is needed here.
             def rows():
@@ -321,7 +444,7 @@ def keyed(entries_db, narrow_db, bits, out):
             o.executemany(f'INSERT INTO {kind} VALUES (?,?)', rows())
             continue
         cur = src.execute('SELECT h, k, v FROM e WHERE kind = ? ORDER BY h, k', (kind,))
-        shift = 63 - bits
+        shift = 63 - kb
 
         def buckets():
             b, parts = None, []
@@ -334,16 +457,20 @@ def keyed(entries_db, narrow_db, bits, out):
                 parts.append(jdump(k) + ':' + v)
             if parts:
                 yield b, parts
+        nb = size = top = 0
         for b, parts in buckets():
             v = _deflate(('{' + ','.join(parts) + '}').encode('utf-8'))
             if len(v) > CAP:
                 over.append((kind, b, len(v)))
             o.execute(f'INSERT INTO {kind} VALUES (?,?)', (b.to_bytes(4, 'big'), v))
+            nb, size, top = nb + 1, size + len(v), max(top, len(v))
+        log(f'{kind} at {kb} bits: {nb:,} buckets, {size:,} bytes, average {size // max(1, nb):,}, largest {top:,}')
     o.execute('COMMIT')
     o.execute('VACUUM')
     o.close()
     src.close()
-    log(f'keyed bits {bits}: {os.path.getsize(out):,} bytes' + (f'; {len(over)} value(s) OVER THE 2 MB CAP' if over else ''))
+    log(f'keyed {fmt} bits {bits}: {os.path.getsize(out):,} bytes'
+        + (f'; {len(over)} value(s) OVER THE 2 MB CAP' if over else ''))
     return over
 
 
@@ -354,10 +481,12 @@ def main():
         aliases(a[1], a[2], a[3])
     elif cmd == 'narrow' and len(a) == 5:
         narrow(a[1], a[2], a[3], a[4])
-    elif cmd == 'entries' and len(a) == 3:
-        entries(a[1], a[2])
+    elif cmd == 'entries' and len(a) in (3, 4):
+        entries(a[1], a[2], a[3] if len(a) == 4 else None)
     elif cmd == 'keyed' and len(a) == 5:
-        over = keyed(a[1], a[2], int(a[3]), a[4])
+        if a[3] != 'sized' and not a[3].isdigit():
+            raise SystemExit(f'bits: a whole number, or sized; not {a[3]!r}')
+        over = keyed(a[1], a[2], a[3] if a[3] == 'sized' else int(a[3]), a[4])
         print(json.dumps({'over_cap': over}))
         if over:
             raise SystemExit(f'{len(over)} value(s) over the cap')

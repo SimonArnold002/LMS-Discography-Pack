@@ -75,13 +75,14 @@ def rows(db):
     return out, meta, have
 
 
-def records(path):
+def records(path, kinds=keyed.KINDS):
+    """(kind, key, value) of each record of a part, its kind named by its index in `kinds` (the manifest's)."""
     with open(path, 'rb') as f:
         b = f.read()
     out, o = [], 0
     while o < len(b):
         (n,) = struct.unpack('>I', b[o + 5:o + 9])
-        out.append((keyed.KINDS[b[o]], b[o + 1:o + 5], b[o + 9:o + 9 + n]))
+        out.append((kinds[b[o]], b[o + 1:o + 5], b[o + 9:o + 9 + n]))
         o += 9 + n
     return out
 
