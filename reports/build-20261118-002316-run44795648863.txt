@@ -1,0 +1,74 @@
+The build's file: dump 20261118-002316, data-2.
+
+  file                         1,618.3 MB
+  rows a load writes              125,954
+  parts                                45
+  parts' bytes                 1,431.2 MB
+  largest part                    32.0 MB
+  manifest                         10,416 bytes
+
+TABLES
+table  bits  buckets        pages       values    average    largest
+art      14   16,384     215.5 MB     188.9 MB    11.5 kB    55.3 kB
+lst      14   16,384     305.5 MB     278.8 MB    17.0 kB   428.4 kB
+grp      11    2,048      32.9 MB      28.4 MB    13.9 kB    17.2 kB
+nam      13    8,192     108.7 MB      98.4 MB    12.0 kB    22.9 kB
+ali      11    2,048      26.0 MB      21.5 MB    10.5 kB    13.1 kB
+rel      15   32,768     400.6 MB     326.0 MB     9.9 kB    13.1 kB
+bar      14   16,384      81.4 MB      74.2 MB     4.5 kB     6.8 kB
+svc      13    8,192     108.7 MB     101.6 MB    12.4 kB    14.9 kB
+prf      10    1,024      14.5 MB      13.2 MB    12.9 kB    16.3 kB
+crd      14   16,384     219.3 MB     202.5 MB    12.4 kB    15.5 kB
+who      11    2,048      36.0 MB      33.8 MB    16.5 kB    19.2 kB
+pgr      12    4,096      69.4 MB      62.6 MB    15.3 kB    74.9 kB
+rol       1        2       0.0 MB       0.0 MB     6.8 kB     9.3 kB
+
+META (bytes a row)
+  namekey_probe                   975
+  names                           380
+  bits_by_kind                    117
+  dump_timestamp                   29
+  built                            20
+  dump                             15
+  file_format                       6
+  replication_sequence              6
+  layout                            5
+  schema_sequence                   2
+  format                            1
+
+RECORDS MADE (more.py)
+  link types                                                      697
+  link attribute types                                          1,174
+  areas                                                       120,154
+  labels                                                      356,602
+  links                                                     1,162,169
+  link attributes                                             929,567
+  l_artist_url rows                                         6,644,213
+    artist links to official homepage                         336,138
+  artists                                                   3,046,425
+  l_artist_artist rows                                        872,761
+  l_artist_recording rows                                  19,261,716
+  recordings                                               41,025,077
+    with credits                                            5,127,047
+  releases                                                  5,942,867
+  release groups                                            4,652,903
+  l_artist_release rows                                     1,654,898
+  release labels                                            5,079,268
+  l_artist_release_group rows                                  17,393
+  records abo                                               1,651,288
+  records lnk                                                 776,549
+  records crd                                               5,127,047
+  records rcr                                                 369,221
+  records who                                                 909,193
+  records rlb                                               4,731,447
+  records pgr                                                 374,517
+
+DISK
+  after the first download   /dev/root       145G   54G   91G  38% /
+  after the tables           /dev/root       145G   55G   90G  38% /
+  after the facts            /dev/root       145G   56G   90G  39% /
+  after the tables file      /dev/root       145G   41G  104G  29% /
+  after the second download  /dev/root       145G   52G   94G  36% /
+  after the more records     /dev/root       145G   54G   92G  37% /
+  after the records          /dev/root       145G   47G   98G  33% /
+  after the keyed file       /dev/root       145G   47G   99G  32% /
