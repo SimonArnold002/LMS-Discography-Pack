@@ -1,0 +1,71 @@
+More record kinds for the keyed data file: dump 20261118-002316, 14 bits (16,384 buckets a kind), measured 2026-11-20 13:24 UTC.
+
+Today's keyed file: 1,259.0 MB (1,258,979,328 bytes), 8 kinds.
+With the kinds below: 2,235.7 MB (2,235,670,528 bytes): 976.7 MB more, +77.6%.
+Bucket rows a whole copy holds: today 131,072; with them 294,912.
+
+Stored = the pages SQLite gives the kind's table; deflated = its values; plain = its records' JSON.
+kind       records  buckets       stored     deflated        plain    largest
+abo      1,607,493   16,384      75.5 MB      46.1 MB      47.2 MB      3.9 kB
+aur        669,986   16,384      73.4 MB      22.1 MB      24.7 MB      2.3 kB
+lnk        776,549   16,384      95.7 MB      76.3 MB     121.7 MB     26.4 kB
+agn        220,847   16,384       6.4 MB       5.8 MB       4.0 MB      0.7 kB
+ggn      1,636,535   16,384      75.5 MB      40.3 MB      38.0 MB      3.6 kB
+crd      5,127,047   16,384     219.3 MB     202.5 MB     312.2 MB     15.5 kB
+rcr        369,221   16,384      44.6 MB      16.5 MB      25.2 MB      2.3 kB
+who        909,193   16,384      75.5 MB      35.4 MB      47.4 MB      3.2 kB
+rlb      4,731,447   16,384     190.0 MB     154.7 MB     132.3 MB     11.6 kB
+per        374,517   16,384     120.8 MB      96.4 MB     222.3 MB    209.4 kB
+crx      5,127,047   16,384     673.9 MB     646.7 MB   1,177.5 MB     55.5 kB   (compared, not in a total)
+
+Today's kinds, for comparison: ali 72.6 MB, art 170.8 MB, bar 81.4 MB, grp 75.5 MB, lst 305.5 MB, nam 139.4 MB, rel 271.6 MB, svc 142.3 MB; meta 0.1 MB
+
+By feature:
+  Members and bands, with years and instruments                                lnk                     95.7 MB
+  Where from and active years; birth and death dates                           abo                     75.5 MB
+  Wikidata (the way to Wikipedia), official homepage, Bandcamp                 aur                     73.4 MB
+  Artist genres (from the tags: CC BY-NC-SA 3.0)                               agn                      6.4 MB
+  Album genres (from the tags: CC BY-NC-SA 3.0)                                ggn                     75.5 MB
+  Album credits: recordings, the release's own, the artists named, labels      crd+rcr+who+rlb        529.4 MB
+  Person pages (credits on whole releases and release groups)                  per                    120.8 MB
+  All of them                                                                                         976.6 MB   (the file grew 976.7 MB)
+
+Credits naming artists by id (crd + who) against writing them in (crx): 219.3 MB + 75.5 MB = 294.8 MB against 673.9 MB.
+Over the 2 MB cap: none.
+
+Read from the dump:
+  link types                                                                    697
+  link attribute types                                                        1,174
+  genres                                                                      2,227
+  areas                                                                     120,154
+  labels                                                                    356,602
+  artists                                                                 3,046,425
+  links                                                                   1,162,169
+  link attributes                                                           929,567
+  l_artist_artist rows                                                      872,761
+  l_artist_url rows                                                       6,644,213
+    artist links to wikidata                                                291,079
+    artist links to official homepage                                       336,138
+    artist links to bandcamp                                                204,503
+  l_artist_recording rows                                                19,261,716
+  recordings                                                             41,025,077
+    with credits                                                          5,127,047
+  releases                                                                5,942,867
+  release groups                                                          4,652,903
+  l_artist_release rows                                                   1,654,898
+  release labels                                                          5,079,268
+  l_artist_release_group rows                                                17,393
+  tags that are a genre                                                       1,931
+  artist_tag rows kept (a genre, votes above 0)                             486,145
+  release_group_tag rows kept (a genre, votes above 0)                    4,619,581
+  records abo                                                             1,607,493
+  records aur                                                               669,986
+  records lnk                                                               776,549
+  records agn                                                               220,847
+  records ggn                                                             1,636,535
+  records crd                                                             5,127,047
+  records rcr                                                               369,221
+  records who                                                               909,193
+  records rlb                                                             4,731,447
+  records per                                                               374,517
+  records crx                                                             5,127,047
