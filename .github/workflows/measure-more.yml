@@ -1,6 +1,7 @@
 # Measures the record kinds builder/measure_more.py adds, on one MusicBrainz dump: the build's own steps make today's
-# keyed file, a second pass of the dump makes the new records, and measure_more adds them to a copy and reports each
-# kind's size. The report is written to reports/ on this branch. Publishes nothing; runs on a push to this branch's
+# keyed file, a second pass of the dump makes the new records, and measure_more writes them three ways (each kind its
+# own table; folded into today's records of the same key; every table at the bucket count that stores it smallest) and
+# reports each. The report is written to reports/ on this branch. Publishes nothing; runs on a push to this branch's
 # code and by hand, never on a schedule.
 name: Measure more kinds
 
