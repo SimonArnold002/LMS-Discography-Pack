@@ -1,0 +1,112 @@
+# Measures the record kinds builder/measure_more.py adds, on one MusicBrainz dump: the build's own steps make today's
+# keyed file, a second pass of the dump makes the new records, and measure_more adds them to a copy and reports each
+# kind's size. The report is written to reports/ on this branch. Publishes nothing; runs on a push to this branch's
+# code and by hand, never on a schedule.
+name: Measure more kinds
+
+on:
+  push:
+    branches: [measure-more]
+    paths: ['builder/**', 'tests/**', '.github/workflows/measure-more.yml']
+  workflow_dispatch:
+    inputs:
+      dump:
+        description: 'fullexport dump name (blank = the newest)'
+        default: ''
+      bits:
+        description: 'buckets a kind, as a power of two'
+        default: '14'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: measure-more
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    # Inputs reach the shell as variables only. The token reaches the one step that writes the report, which runs no
+    # build code.
+    env:
+      DSC_REF: ${{ vars.DSC_REF || 'ef6f87b2cfd7e3ac05e7f3986fef3893947b3e8c' }}
+      DUMP: ${{ inputs.dump }}
+      BITS: ${{ inputs.bits || '14' }}
+    steps:
+      - name: The inputs, checked before anything runs
+        run: |
+          case "$DSC_REF" in *[!0-9a-f]*) echo "DSC_REF: a full commit id, please"; exit 1 ;; esac
+          [ "${#DSC_REF}" -eq 40 ] || { echo "DSC_REF: a full commit id (40 characters), please"; exit 1; }
+          case "$DUMP" in *[!0-9-]*) echo "not a dump name: $DUMP"; exit 1 ;; esac
+          case "$BITS" in ''|*[!0-9]*) echo "bits: a whole number"; exit 1 ;; esac
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4, read 2026-11-13
+        with:
+          persist-credentials: false
+
+      - name: LMS-Discography's Sources.pm (the name keys)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4, read 2026-11-13
+        with:
+          repository: SimonArnold002/LMS-Discography
+          ref: ${{ env.DSC_REF }}
+          path: dsc
+          persist-credentials: false
+          sparse-checkout: Discography/Sources.pm
+          sparse-checkout-cone-mode: false
+
+      - name: Disk space and tools
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get update -qq && sudo apt-get install -y -qq lbzip2
+          md5sum dsc/Discography/Sources.pm
+          df -h . && free -g && nproc
+
+      - name: Tests (the made-up dump; nothing is measured if they fail)
+        run: DSC_DIR="$PWD/dsc" python3 -m unittest discover -s tests -v
+
+      - name: Which dump
+        run: |
+          B="$DUMP"
+          [ -n "$B" ] || B=$(python3 -I builder/fetch_dump.py latest)
+          case "$B" in *[!0-9-]*|'') echo "not a dump name: $B"; exit 1 ;; esac
+          echo "B=$B" >> "$GITHUB_ENV"
+          echo "measuring dump $B"
+
+      # The build's own step, as build.yml runs it: today's keyed file.
+      - name: Today's keyed file (the build's steps)
+        run: |
+          mkdir -p out
+          python3 -I builder/measure_extra.py fetch "$B" work
+          python3 -I builder/build_pack.py work out/base.db --dsc "$PWD/dsc" --dump "$B"
+          python3 -I builder/measure_extra.py facts work out/facts.db > /dev/null
+          python3 -I builder/keyed.py aliases out/base.db "$PWD/dsc" out/aliases.tsv
+          rm -rf work
+          python3 -I builder/keyed.py narrow out/base.db out/facts.db out/aliases.tsv out/tables.db
+          python3 -I builder/keyed.py entries out/tables.db out/entries.db
+          rm -f out/base.db out/facts.db out/aliases.tsv
+          python3 -I builder/keyed.py keyed out/entries.db out/tables.db "$BITS" out/keyed.db
+          rm -f out/tables.db out/entries.db
+          ls -l out
+          df -h .
+
+      - name: The second pass and the new records
+        run: |
+          python3 -I builder/measure_more.py fetch "$B" work2
+          df -h .
+          python3 -I builder/measure_more.py entries work2 out/more.db
+          rm -rf work2
+          ls -l out
+          df -h .
+
+      - name: The measurement
+        run: |
+          python3 -I builder/measure_more.py measure out/keyed.db out/more.db out/m
+          cp out/m/report.txt "out/more-$B-run$GITHUB_RUN_ID.txt"
+          cat out/m/report.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: The report, written to this branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh builder/put_report.sh "$GITHUB_REPOSITORY" measure-more "reports/more-$B-run$GITHUB_RUN_ID.txt" "out/more-$B-run$GITHUB_RUN_ID.txt"
